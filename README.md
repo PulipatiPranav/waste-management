@@ -3,9 +3,9 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 0 — scaffolding only.** No business features are implemented. The
-> repo builds, lints, typechecks and tests end to end; every module below is a
-> skeleton with a reference implementation to copy, not a feature.
+> **Status: Phase 1 — auth, users, roles.** Phone-OTP login, JWT sessions with
+> refresh-token rotation, role guards, and user/address CRUD. No subscription,
+> delivery, pickup or wallet features yet.
 
 ---
 
@@ -62,8 +62,17 @@ pnpm dev:infra
 cp apps/api/.env.example       apps/api/.env
 cp apps/admin/.env.example     apps/admin/.env.local
 
-# 4. Apply migrations (no-op today — Phase 0 declares no models)
+# 4. Apply migrations
 pnpm --filter @cpe/api exec prisma migrate deploy
+```
+
+To log in locally, request an OTP and read the code from the API log — the `console`
+SMS provider prints it rather than sending it:
+
+```bash
+curl -X POST localhost:3000/api/v1/auth/otp/request \
+  -H 'Content-Type: application/json' -d '{"phone":"9876543210"}'
+# the code is printed in the `pnpm --filter @cpe/api dev` output
 ```
 
 ### Running each app
@@ -218,6 +227,72 @@ incidental: when the test harness configured the app differently from production
 suite passed against health routes that the deployed server did not actually serve.
 
 ---
+
+## Auth (Phase 1)
+
+Customers authenticate by phone OTP; there is no customer password at all. Staff
+(`OPS_STAFF`, `SUPER_ADMIN`) additionally have email + Argon2id password login.
+
+```
+POST /api/v1/auth/otp/request   { phone }                 -> 200 (always, for a valid number)
+POST /api/v1/auth/otp/verify    { phone, code }           -> 200 { accessToken, refreshToken, isNewUser }
+POST /api/v1/auth/staff/login   { email, password }       -> 200 { accessToken, refreshToken }
+POST /api/v1/auth/refresh       { refreshToken }          -> 200 (rotates)
+POST /api/v1/auth/logout        { refreshToken }          -> 204 (idempotent)
+```
+
+Locally the `console` SMS provider prints the code to the API log instead of sending
+it. The API **refuses to boot** with `NODE_ENV=production` and `SMS_PROVIDER=console`
+— that combination would mean no user ever receives a code and every code is written
+to the log stream. A real provider (MSG91/Twilio) is a new class implementing
+`SmsProvider` plus one line in the enum; no use case changes.
+
+### The decisions worth knowing
+
+- **Authentication is default-deny.** `JwtAuthGuard` is registered globally, so a new
+  endpoint is protected unless someone writes `@Public()`. The opposite arrangement
+  fails open: the one controller you forget to guard ships unauthenticated.
+- **The guard re-reads the user from the database on every request.** A JWT is frozen
+  at issue time, so without this a suspended user keeps access until their token
+  expires, and a demoted admin keeps admin rights. For a system that moves money that
+  window is unacceptable; the cost is one indexed primary-key lookup.
+- **Refresh tokens rotate, and reuse is treated as theft.** Every refresh revokes the
+  presented token and issues a successor in the same _family_. Presenting an
+  already-revoked token means it was captured and replayed — we cannot tell victim
+  from thief, so the whole family is revoked and both must log in again. Other devices
+  (separate families) are unaffected.
+- **OTPs are Argon2id-hashed, never stored or logged in plaintext.** Six digits is only
+  10^6 possibilities, so a fast hash would be cracked instantly from a leaked table.
+  Refresh tokens use SHA-256 instead — they are 256 bits of CSPRNG output, so there is
+  no dictionary to grind and Argon2 would only add latency. Two ports (`SecretHasher`,
+  `TokenHasher`) keep that choice explicit rather than accidental.
+- **Rate limiting is per-phone AND per-IP, both in Redis.** Per-phone alone lets one
+  host walk the number space; per-IP alone lets a botnet SMS-bomb one victim (and bill
+  us for every message). Both `@nestjs/throttler` and the OTP budget are backed by
+  Redis — the library's default in-memory store is per-process, so N replicas would
+  silently mean N× the budget.
+- **Enumeration is closed off.** `otp/request` answers identically for registered and
+  unregistered numbers; wrong-code, expired, and already-used all return one vague
+  error; staff login returns the same error for an unknown email as for a wrong
+  password (and burns equivalent CPU, so latency does not leak either).
+- **Ownership checks return 404, not 403.** A 403 on someone else's address would
+  confirm the id is real and let an attacker enumerate ids.
+
+`trust proxy` is set to `1` in `configureApp`. It must match the number of proxy hops
+in front of the API: too low and every client shares one rate-limit bucket, too high
+(or `true`) and a client can spoof `X-Forwarded-For` to mint unlimited buckets.
+
+## Known gaps (Phase 1)
+
+- **No real SMS provider.** Only `console`. Production boot is blocked until one exists.
+- **No admin endpoints to change a user's role or suspend them.** Both are DB-level
+  operations today. They need an audit trail, which arrives with the `AuditLog` model
+  in Phase 9.
+- **Access tokens cannot be revoked before they expire** (15 minutes). Suspension is
+  enforced by the per-request `isActive` check instead; a role _downgrade_ likewise
+  takes effect immediately because the guard reads the role from the database, not the
+  token.
+- **Apartment and Business exist as tables only** — no endpoints, no membership. Phase 7.
 
 ## Known gaps (Phase 0)
 

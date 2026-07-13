@@ -1,5 +1,6 @@
 import { type INestApplication, ValidationPipe, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { type Express } from 'express';
 import helmet from 'helmet';
 
 import { type Env } from '@/config/env.schema';
@@ -16,6 +17,18 @@ import { AllExceptionsFilter } from '@/shared/presentation/filters/all-exception
  */
 export function configureApp(app: INestApplication): INestApplication {
   const config = app.get<ConfigService<Env, true>>(ConfigService);
+
+  // Behind an ingress/load balancer, the socket's peer address is the proxy's, not the
+  // client's. Without this, `request.ip` is the same value for EVERY request, so the
+  // per-IP OTP limit degenerates into one global bucket that a single attacker can
+  // exhaust — locking every real user out of login.
+  //
+  // `1` = trust exactly one proxy hop (the ingress). Do NOT set this to `true`: that
+  // trusts the whole X-Forwarded-For chain, letting a client spoof its own IP by
+  // sending the header, which hands them an unlimited supply of fresh rate-limit
+  // buckets. If a second proxy is added in front, this number must go up with it.
+  const express = app.getHttpAdapter().getInstance() as Express;
+  express.set('trust proxy', 1);
 
   app.use(helmet());
 

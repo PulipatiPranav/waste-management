@@ -15,5 +15,8 @@ allowBuilds:
   sharp: true
   # Native module resolver used by the ESLint toolchain.
   unrs-resolver: true
+  # Native binding for the Argon2 password hash. Without its build step the module
+  # cannot load at all.
+  argon2: true
   # Anonymous analytics pinger. Nothing depends on it running.
   "@scarf/scarf": false

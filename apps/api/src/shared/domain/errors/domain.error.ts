@@ -25,20 +25,34 @@ export abstract class DomainError extends Error {
 
 /** The requested resource does not exist, or the caller may not know that it does. */
 export class NotFoundError extends DomainError {
-  readonly code = 'NOT_FOUND';
+  readonly code: string = 'NOT_FOUND';
 }
 
 /** The request is well-formed but conflicts with the current state of the resource. */
 export class ConflictError extends DomainError {
-  readonly code = 'CONFLICT';
+  readonly code: string = 'CONFLICT';
 }
 
 /** A business invariant was violated (distinct from a DTO-shape validation failure). */
 export class InvariantViolationError extends DomainError {
-  readonly code = 'INVARIANT_VIOLATION';
+  readonly code: string = 'INVARIANT_VIOLATION';
 }
 
 /** The caller is authenticated but not permitted to perform this action. */
 export class ForbiddenError extends DomainError {
-  readonly code = 'FORBIDDEN';
+  readonly code: string = 'FORBIDDEN';
+}
+
+/**
+ * The caller is not authenticated at all — no token, or a bad one. Distinct from
+ * ForbiddenError: 401 means "log in", 403 means "logged in, but not allowed".
+ */
+export abstract class UnauthorizedDomainError extends DomainError {}
+
+/**
+ * Too many requests. Carries `retryAfterSeconds` because a 429 without a Retry-After
+ * header just invites the client to hammer the endpoint in a tight loop.
+ */
+export abstract class TooManyRequestsDomainError extends DomainError {
+  abstract readonly retryAfterSeconds: number;
 }

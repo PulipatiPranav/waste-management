@@ -15,6 +15,8 @@ import {
   ForbiddenError,
   InvariantViolationError,
   NotFoundError,
+  TooManyRequestsDomainError,
+  UnauthorizedDomainError,
 } from '@/shared/domain/errors/domain.error';
 
 /**
@@ -53,6 +55,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
       );
     } else {
       this.logger.warn(`${request.method} ${request.url} -> ${status} ${code} (${message})`);
+    }
+
+    // A 429 without Retry-After just invites the client to spin in a tight loop,
+    // which is the opposite of what rate limiting is for.
+    if (exception instanceof TooManyRequestsDomainError) {
+      response.setHeader('Retry-After', String(exception.retryAfterSeconds));
+    }
+
+    // Tells a browser client this is an auth failure it should respond to by
+    // re-authenticating, rather than a generic error.
+    if (exception instanceof UnauthorizedDomainError) {
+      response.setHeader('WWW-Authenticate', 'Bearer');
     }
 
     response.status(status).json(body);
@@ -103,7 +117,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
   private statusForDomainError(error: DomainError): number {
     if (error instanceof NotFoundError) return HttpStatus.NOT_FOUND;
     if (error instanceof ConflictError) return HttpStatus.CONFLICT;
+    // Order matters: AccountSuspendedError extends ForbiddenError, and both must map
+    // to 403 rather than falling through to the 400 default.
     if (error instanceof ForbiddenError) return HttpStatus.FORBIDDEN;
+    if (error instanceof UnauthorizedDomainError) return HttpStatus.UNAUTHORIZED;
+    if (error instanceof TooManyRequestsDomainError) return HttpStatus.TOO_MANY_REQUESTS;
     if (error instanceof InvariantViolationError) return HttpStatus.UNPROCESSABLE_ENTITY;
     return HttpStatus.BAD_REQUEST;
   }

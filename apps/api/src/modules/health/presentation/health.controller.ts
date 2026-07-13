@@ -1,4 +1,7 @@
 import { Controller, Get, HttpCode, HttpStatus, Res, VERSION_NEUTRAL } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
+
+import { Public } from '@/modules/auth/presentation/decorators/public.decorator';
 import {
   ApiOkResponse,
   ApiOperation,
@@ -18,6 +21,13 @@ import { LivenessResponseDto } from './dto/liveness-response.dto';
  * fixes nothing and turns a database blip into a crash-loop.
  */
 @ApiTags('health')
+// Kubernetes cannot present a bearer token, so these must bypass the global
+// JwtAuthGuard — without @Public() every probe gets a 401, the pod never goes ready,
+// and the deployment stalls.
+@Public()
+// And they must bypass the throttler: probes hit every 10s per pod, forever. A 429 on
+// a liveness probe would make Kubernetes restart a perfectly healthy pod.
+@SkipThrottle()
 // VERSION_NEUTRAL, plus the `exclude` in configureApp, is what pins these at exactly
 // /health/live and /health/ready. Without it, URI versioning silently serves them at
 // /v1/health/live and every Kubernetes probe 404s — the pod never becomes ready and

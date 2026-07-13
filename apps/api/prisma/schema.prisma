@@ -1,14 +1,9 @@
 // Circular Paper Economy — database schema.
 //
-// Phase 0 intentionally declares no models: this phase is scaffolding, and an
-// empty schema still gives us a generated client, a working `prisma migrate`
-// pipeline and a connection to health-check. Phase 1 adds User / Address /
-// Apartment / Business.
-//
-// Conventions for the models that follow:
+// Conventions:
 //   - Table names are snake_case via @@map; Prisma models stay PascalCase.
-//   - Money is `Decimal @db.Decimal(12, 2)` — never Float. Floating-point rupees
-//     in a cashback ledger produce reconciliation bugs that are painful to unwind.
+//   - Money is `Decimal @db.Decimal(12, 2)` — never Float. Floating-point rupees in
+//     a cashback ledger produce reconciliation bugs that are painful to unwind.
 //   - Weights are `Decimal @db.Decimal(10, 3)` (grams of precision on a kg value).
 //   - Ledger tables are append-only: no updatedAt, no in-place mutation.
 
@@ -19,4 +14,211 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+enum Role {
+  CUSTOMER
+  APARTMENT_ADMIN
+  BUSINESS_ADMIN
+  DELIVERY_PARTNER
+  RECYCLING_PARTNER_ADMIN
+  OPS_STAFF
+  SUPER_ADMIN
+}
+
+model User {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// E.164, e.g. +919876543210. Normalised on the way in — the same human must not
+  /// be able to create two accounts by typing 9876543210 and +91 98765 43210.
+  phone String  @unique
+  email String? @unique
+  name  String?
+
+  /// Argon2id. Null for OTP-only accounts (every customer). Only staff and admins
+  /// ever set one — see StaffLoginUseCase.
+  passwordHash String?
+
+  role Role @default(CUSTOMER)
+
+  /// Set the first time an OTP is successfully verified for this phone.
+  phoneVerifiedAt DateTime?
+
+  /// Soft disable. A suspended user's existing tokens are rejected at the guard,
+  /// so suspension takes effect immediately rather than at token expiry.
+  isActive Boolean @default(true)
+
+  addresses     Address[]
+  refreshTokens RefreshToken[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([role])
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Organisations. Minimal for now — Phase 7 grows these into real tenants.
+// ---------------------------------------------------------------------------
+
+model Apartment {
+  id       String  @id @default(uuid()) @db.Uuid
+  name     String
+  verified Boolean @default(false)
+
+  addresses Address[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("apartments")
+}
+
+model Business {
+  id       String  @id @default(uuid()) @db.Uuid
+  name     String
+  verified Boolean @default(false)
+
+  addresses Address[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("businesses")
+}
+
+// ---------------------------------------------------------------------------
+// Addresses
+// ---------------------------------------------------------------------------
+
+/// An address belongs to exactly one of a user, an apartment or a business.
+///
+/// Prisma has no native check constraint, so the "exactly one owner" rule is
+/// enforced in SQL by the migration (`addresses_exactly_one_owner`). Leaving it to
+/// application code alone means the one buggy write path that forgets it silently
+/// creates an orphaned or double-owned row, and pickups get routed nowhere.
+model Address {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Free-text tag the customer sees: "Home", "Office".
+  label String?
+
+  line1    String
+  line2    String?
+  city     String
+  state    String
+  pincode  String
+  country  String  @default("IN")
+  landmark String?
+
+  latitude  Decimal? @db.Decimal(9, 6)
+  longitude Decimal? @db.Decimal(9, 6)
+
+  /// The default pickup/delivery address for its owner. At most one per owner is
+  /// enforced in the repository, not the DB — partial unique indexes across three
+  /// nullable owner columns are more trouble than they are worth here.
+  isDefault Boolean @default(false)
+
+  userId      String? @db.Uuid
+  apartmentId String? @db.Uuid
+  businessId  String? @db.Uuid
+
+  user      User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apartment Apartment? @relation(fields: [apartmentId], references: [id], onDelete: Cascade)
+  business  Business?  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([apartmentId])
+  @@index([businessId])
+  @@index([pincode])
+  @@map("addresses")
+}
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
+enum OtpPurpose {
+  LOGIN
+}
+
+/// A single OTP challenge.
+///
+/// The code itself is NEVER stored or logged in plaintext — only `codeHash`
+/// (Argon2id). A six-digit code is trivially brute-forced from a leaked table if it
+/// is hashed with something fast, so the slow hash is doing real work here even
+/// though the code is short-lived.
+model OtpChallenge {
+  id String @id @default(uuid()) @db.Uuid
+
+  phone    String
+  codeHash String
+
+  purpose OtpPurpose @default(LOGIN)
+
+  expiresAt DateTime
+
+  /// Set the moment the code is accepted. A non-null value makes the challenge
+  /// single-use: VerifyOtpUseCase refuses a consumed challenge even if the code and
+  /// the expiry are both still valid.
+  consumedAt DateTime?
+
+  /// Wrong guesses so far. At the configured maximum the challenge is dead, which
+  /// caps an online brute force at a handful of tries regardless of rate limiting.
+  attempts Int @default(0)
+
+  /// For abuse forensics. Not used for rate limiting — that is Redis.
+  requestIp String?
+
+  createdAt DateTime @default(now())
+
+  /// Verification looks up the newest live challenge for a phone.
+  @@index([phone, createdAt])
+  @@map("otp_challenges")
+}
+
+/// A refresh token, stored only as a SHA-256 hash.
+///
+/// SHA-256 rather than Argon2 on purpose: unlike a 6-digit OTP, the token is 256
+/// bits of CSPRNG output, so there is no dictionary to grind and a slow hash buys
+/// nothing while costing latency on every refresh.
+model RefreshToken {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String @unique
+
+  /// All tokens descended from one login share a family id.
+  ///
+  /// This is what makes theft detectable: rotation revokes each token as it is
+  /// exchanged, so if a *already-revoked* token is ever presented again, either the
+  /// legitimate client or an attacker is replaying a stolen one. We cannot tell
+  /// which, so the whole family is revoked and both are forced to log in again.
+  family String @db.Uuid
+
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  /// The token this one was rotated into. Purely for auditing a family's chain.
+  replacedByTokenId String? @db.Uuid
+
+  userAgent String?
+  ip        String?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([family])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
 }
