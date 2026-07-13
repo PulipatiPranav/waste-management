@@ -1,0 +1,29 @@
+{
+  "name": "@cpe/shared-types",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Types shared between the NestJS API and the Next.js admin dashboard. Will be OpenAPI-generated from the API's Swagger spec in a later phase.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo \"no tests in shared-types yet\" && exit 0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

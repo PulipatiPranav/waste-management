@@ -1,0 +1,19 @@
+packages:
+  - "apps/api"
+  - "apps/admin"
+  - "packages/*"
+
+# pnpm blocks dependency lifecycle scripts by default (a supply-chain guard: a
+# compromised transitive dep cannot run code at install time). Each package that
+# genuinely needs its postinstall is allowed here, explicitly.
+allowBuilds:
+  # Downloads/relocates the Prisma query engine binary; the client is unusable without it.
+  "@prisma/client": true
+  "@prisma/engines": true
+  prisma: true
+  # Native image-processing binary used by Next.js image optimisation.
+  sharp: true
+  # Native module resolver used by the ESLint toolchain.
+  unrs-resolver: true
+  # Anonymous analytics pinger. Nothing depends on it running.
+  "@scarf/scarf": false

@@ -1,0 +1,12 @@
+#!/bin/sh
+
+# 1. Lint + format only what is staged. Fast, and it fixes in place.
+pnpm exec lint-staged || exit 1
+
+# 2. Typecheck the whole TS workspace.
+#
+# This cannot be scoped to staged files: `tsc` is project-wide, and the failure
+# mode that matters is exactly the cross-file one — editing a type in
+# packages/shared-types compiles fine on its own while breaking apps/admin. That is
+# the class of break this hook exists to stop, so it is worth the few extra seconds.
+pnpm typecheck || exit 1

@@ -1,0 +1,57 @@
+# Local development dependencies only — Postgres and Redis.
+#
+# The API and admin apps are NOT containerised here on purpose: running them with
+# `pnpm dev` keeps hot-reload and debugger attachment fast. The container images in
+# this directory are for CI and deployment.
+#
+#   pnpm dev:infra        start
+#   pnpm dev:infra:down   stop, keeping data
+#   pnpm dev:infra:reset  stop and delete the volumes
+#
+# Podman users: `podman compose -f infra/docker/docker-compose.yml up -d` works too.
+
+name: cpe
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: cpe-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cpe
+      # Local-only credential. Real environments inject DATABASE_URL from a secret store.
+      POSTGRES_PASSWORD: cpe_local_dev
+      POSTGRES_DB: cpe
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # `-d cpe` matters: without it pg_isready checks the default `postgres`
+      # database and reports healthy before ours is actually accepting connections.
+      test: ["CMD-SHELL", "pg_isready -U cpe -d cpe"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: cpe-redis
+    restart: unless-stopped
+    # appendonly keeps BullMQ jobs across a restart. Losing a queued wallet credit
+    # because a laptop rebooted would be a confusing bug to chase in later phases.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,59 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+out/
+.next/
+*.tsbuildinfo
+
+# env — only .env.example files are ever committed
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# test / coverage
+coverage/
+.nyc_output/
+
+# prisma
+apps/api/prisma/migrations/dev.db*
+
+# flutter / dart
+# Generated code is NOT committed: it is a pure function of the source, and having
+# it in the tree turns every dependency bump into a thousand-line diff that hides
+# the real change. CI runs build_runner before analyze/test — see ci.yml.
+apps/mobile/**/*.g.dart
+apps/mobile/**/*.freezed.dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+apps/mobile/build/
+apps/mobile/android/.gradle/
+apps/mobile/android/local.properties
+apps/mobile/android/key.properties
+apps/mobile/ios/Pods/
+apps/mobile/ios/.symlinks/
+apps/mobile/ios/Flutter/Flutter.framework
+apps/mobile/ios/Flutter/Flutter.podspec
+apps/mobile/ios/Flutter/Generated.xcconfig
+apps/mobile/ios/Flutter/flutter_export_environment.sh
+*.iml
+
+# editors / os
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*

@@ -1,0 +1,27 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // NestJS is CommonJS + decorator-metadata based; it does not run on the
+    // NodeNext/ESM settings the rest of the workspace defaults to.
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "isolatedModules": false,
+
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "outDir": "./dist",
+    "baseUrl": "./src",
+    "paths": {
+      "@/*": ["*"]
+    },
+
+    // Nest's DI resolves optional constructor params in ways the strictest
+    // optional-property checking flags without catching real defects.
+    "exactOptionalPropertyTypes": false,
+    "strictPropertyInitialization": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

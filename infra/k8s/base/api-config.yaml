@@ -1,0 +1,19 @@
+# Non-secret configuration only. Anything sensitive belongs in the Secret —
+# see api-secret.example.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cpe-api-config
+  namespace: cpe
+data:
+  NODE_ENV: "production"
+  PORT: "3000"
+  API_PREFIX: "/api"
+  LOG_LEVEL: "info"
+  # Swagger stays off in production: it enumerates every endpoint and DTO for anyone
+  # who finds the URL.
+  SWAGGER_ENABLED: "false"
+  # Overlays patch this per environment.
+  CORS_ORIGINS: "https://admin.example.com"
+  REDIS_HOST: "cpe-redis"
+  REDIS_PORT: "6379"

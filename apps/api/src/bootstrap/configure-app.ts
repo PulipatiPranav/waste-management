@@ -1,0 +1,56 @@
+import { type INestApplication, ValidationPipe, VersioningType } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import helmet from 'helmet';
+
+import { type Env } from '@/config/env.schema';
+import { AllExceptionsFilter } from '@/shared/presentation/filters/all-exceptions.filter';
+
+/**
+ * Everything that turns a bare Nest app into *our* app.
+ *
+ * Both `main.ts` and the e2e tests call this, and that is the entire point. When
+ * the test harness configured the app differently from production, the e2e suite
+ * happily passed against routes that did not exist in the deployed server — the
+ * health endpoints 404'd in production while going green in CI. One function, one
+ * behaviour, both callers.
+ */
+export function configureApp(app: INestApplication): INestApplication {
+  const config = app.get<ConfigService<Env, true>>(ConfigService);
+
+  app.use(helmet());
+
+  app.enableCors({
+    origin: config
+      .get('CORS_ORIGINS', { infer: true })
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean),
+    credentials: true,
+  });
+
+  // Health endpoints are excluded from the /api prefix AND declared VERSION_NEUTRAL
+  // on the controller, so they resolve at exactly /health/live and /health/ready.
+  // Kubernetes probes are configured against those literal paths; a version bump
+  // must never move them.
+  app.setGlobalPrefix(config.get('API_PREFIX', { infer: true }), {
+    exclude: ['health/live', 'health/ready'],
+  });
+
+  app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      // Reject unknown properties outright rather than silently dropping them: a
+      // client sending `amount` to an endpoint expecting `amountKg` should get an
+      // error, not a default.
+      forbidNonWhitelisted: true,
+      transform: true,
+      transformOptions: { enableImplicitConversion: false },
+    }),
+  );
+
+  app.useGlobalFilters(new AllExceptionsFilter());
+
+  return app;
+}

@@ -1,0 +1,71 @@
+name: cpe_mobile
+description: Circular Paper Economy — customer and delivery partner mobile app.
+publish_to: 'none'
+version: 0.0.1+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management. Riverpod over Provider/BLoC for compile-safe DI, and because
+  # provider overrides make widget tests trivial to isolate.
+  flutter_riverpod: ^3.3.2
+  riverpod_annotation: ^4.0.3
+
+  # Routing. The `redirect` hook is where the Phase 11 auth/role guard goes.
+  go_router: ^17.3.0
+
+  # HTTP. Interceptors are where the access-token attach and the
+  # 401 -> refresh -> retry-once flow land in Phase 11.
+  dio: ^5.10.0
+
+  # Immutable models, sealed unions, value equality.
+  freezed_annotation: ^3.1.0
+  json_annotation: ^4.12.0
+
+  # Offline-first local persistence. Delivery partners routinely work with no signal
+  # mid-route; Phase 13's offline completion queue is built on Drift.
+  drift: ^2.34.1
+  drift_flutter: ^0.3.1
+  path_provider: ^2.1.6
+
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  build_runner: ^2.15.1
+  json_serializable: ^6.14.0
+  riverpod_generator: ^4.0.4
+
+  # PINNED TO A PRERELEASE, DELIBERATELY.
+  #
+  # The Dart ecosystem is mid-migration from analyzer 12 to 13. Every freezed 3.2.x
+  # requires analyzer ^12, while drift_dev >=2.34.1+1 requires analyzer ^13 — pub
+  # cannot satisfy both. This dev build is the only freezed that resolves against the
+  # analyzer 12 line the rest of this toolchain sits on.
+  #
+  # Acceptable because freezed is a BUILD-TIME code generator: it emits .freezed.dart,
+  # which the analyzer and compiler then check like any other source. It ships in no
+  # AAB or IPA. Revisit when drift_dev and riverpod_generator agree on an analyzer
+  # major, then move freezed and drift_dev to stable together.
+  # (riverpod_generator pulls riverpod_analyzer_utils 1.0.0-dev.10 for the same reason.)
+  freezed: ^3.2.6-dev.1
+
+  # Held on the 2.34.0 line for the same reason: 2.34.1+1 jumps to analyzer 13 and
+  # breaks the resolution above.
+  drift_dev: ^2.34.0
+
+  flutter_lints: ^6.0.0
+
+  # riverpod_lint + custom_lint are intentionally ABSENT. Both cap `analyzer` below
+  # what drift_dev and freezed 3.x need, so adding them drags drift and freezed back
+  # to 2.x — too high a price for lint rules. Add once the ecosystem lands on
+  # analyzer 13.
+
+flutter:
+  uses-material-design: true

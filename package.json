@@ -1,0 +1,45 @@
+{
+  "name": "circular-paper-economy",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.12.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r --filter \"./apps/**\" --filter \"./packages/**\" build",
+    "lint": "pnpm -r lint",
+    "lint:fix": "pnpm -r lint:fix",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "dev:infra": "docker compose -f infra/docker/docker-compose.yml up -d",
+    "dev:infra:down": "docker compose -f infra/docker/docker-compose.yml down",
+    "dev:infra:reset": "docker compose -f infra/docker/docker-compose.yml down -v",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^16.5.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.6",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.4"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,mjs,cjs}": [
+      "eslint --fix --no-warn-ignored --max-warnings=0",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ],
+    "*.dart": [
+      "dart format --line-length 100"
+    ]
+  }
+}

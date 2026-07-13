@@ -1,0 +1,22 @@
+// Circular Paper Economy — database schema.
+//
+// Phase 0 intentionally declares no models: this phase is scaffolding, and an
+// empty schema still gives us a generated client, a working `prisma migrate`
+// pipeline and a connection to health-check. Phase 1 adds User / Address /
+// Apartment / Business.
+//
+// Conventions for the models that follow:
+//   - Table names are snake_case via @@map; Prisma models stay PascalCase.
+//   - Money is `Decimal @db.Decimal(12, 2)` — never Float. Floating-point rupees
+//     in a cashback ledger produce reconciliation bugs that are painful to unwind.
+//   - Weights are `Decimal @db.Decimal(10, 3)` (grams of precision on a kg value).
+//   - Ledger tables are append-only: no updatedAt, no in-place mutation.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}

@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpe-api
+  namespace: cpe
+  labels:
+    app.kubernetes.io/name: cpe-api
+    app.kubernetes.io/part-of: circular-paper-economy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cpe-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cpe-api
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: api
+          # Overlays patch this with the immutable digest/tag CI pushed.
+          image: ghcr.io/OWNER/cpe-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: cpe-api-config
+            - secretRef:
+                name: cpe-api-secrets
+          # Liveness restarts the pod; readiness only pulls it from the Service.
+          # They point at different endpoints on purpose: a Postgres outage must
+          # take pods out of rotation, not restart-loop every replica in the cluster.
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          # Gives the pod time to finish in-flight requests (Nest's shutdown hooks)
+          # before the container is killed.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          resources:
+            # requests == limits for memory: this container should be evicted rather
+            # than allowed to balloon and take a node down. CPU is left burstable.
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      terminationGracePeriodSeconds: 30

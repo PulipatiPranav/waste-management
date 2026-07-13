@@ -1,0 +1,182 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A new push to the same PR cancels the previous run — no point burning minutes on
+# a commit that has already been superseded.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  FLUTTER_VERSION: "3.44.6"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Which app directories actually changed. The Flutter job is slow; there is no
+  # reason to run it for a PR that only touches the API.
+  # ---------------------------------------------------------------------------
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      ts: ${{ steps.filter.outputs.ts }}
+      mobile: ${{ steps.filter.outputs.mobile }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ts:
+              - 'apps/api/**'
+              - 'apps/admin/**'
+              - 'packages/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'tsconfig.base.json'
+              - 'eslint.config.mjs'
+              - '.github/workflows/ci.yml'
+            mobile:
+              - 'apps/mobile/**'
+              - '.github/workflows/ci.yml'
+
+  # ---------------------------------------------------------------------------
+  # api + admin + shared-types: lint, typecheck, build, test
+  # ---------------------------------------------------------------------------
+  typescript:
+    name: TypeScript (lint, typecheck, build, test)
+    needs: changes
+    if: needs.changes.outputs.ts == 'true'
+    runs-on: ubuntu-latest
+
+    # Real Postgres and Redis, so the e2e test exercises the actual Prisma client and
+    # DI graph rather than a mock that agrees with whatever we wrote.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: cpe
+          POSTGRES_PASSWORD: cpe_ci
+          POSTGRES_DB: cpe_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cpe -d cpe_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://cpe:cpe_ci@localhost:5432/cpe_test?schema=public
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      # --frozen-lockfile fails the build if pnpm-lock.yaml disagrees with the
+      # package.json files, rather than silently resolving something new.
+      # The api's postinstall runs `prisma generate`.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate Prisma schema
+        run: pnpm --filter @cpe/api exec prisma validate
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Apply migrations
+        run: pnpm --filter @cpe/api exec prisma migrate deploy
+
+      - name: E2E tests
+        run: pnpm --filter @cpe/api test:e2e
+
+  # ---------------------------------------------------------------------------
+  # mobile: format check, codegen, analyze, test
+  # ---------------------------------------------------------------------------
+  flutter:
+    name: Flutter (analyze, test)
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Check formatting
+        run: dart format --line-length 100 --set-exit-if-changed .
+
+      # .g.dart / .freezed.dart are gitignored, so they must be generated before the
+      # analyzer sees the code that references them.
+      - name: Generate code
+        run: dart run build_runner build
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+  # ---------------------------------------------------------------------------
+  # Single required status check. Branch protection points at this one job, so the
+  # skipped-by-path-filter jobs above do not leave a PR permanently "pending".
+  # ---------------------------------------------------------------------------
+  ci:
+    name: CI
+    if: always()
+    needs: [typescript, flutter]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any job failed
+        # 'skipped' is a pass (the paths filter decided it was irrelevant);
+        # 'failure' and 'cancelled' are not.
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "One or more CI jobs failed."
+          exit 1
+      - name: Success
+        run: echo "All required checks passed."

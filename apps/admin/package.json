@@ -1,0 +1,28 @@
+{
+  "name": "@cpe/admin",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Circular Paper Economy — internal ops/support/finance/QC dashboard",
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev --port 3001",
+    "start": "next start --port 3001",
+    "clean": "rm -rf .next out *.tsbuildinfo",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo \"no tests in admin yet — component tests land with the Phase 9 screens\" && exit 0"
+  },
+  "dependencies": {
+    "@cpe/shared-types": "workspace:*",
+    "next": "^15.5.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.9",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.1",
+    "typescript": "^5.9.3"
+  }
+}
