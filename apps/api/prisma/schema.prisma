@@ -73,6 +73,11 @@ model User {
   /// Set only for users with role DELIVERY_PARTNER.
   deliveryPartner DeliveryPartner?
 
+  wallet          Wallet?
+  pickupRequests  PickupRequest[]
+  withdrawals     WithdrawalRequest[]
+  idempotencyKeys IdempotencyKey[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -154,6 +159,7 @@ model Address {
   /// at it cannot be deleted out from under the delivery run.
   subscriptions  Subscription[]
   deliveryStops  DeliveryStop[]
+  pickupRequests PickupRequest[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -502,8 +508,9 @@ model DeliveryPartner {
   /// is unavailable but very much still onboarded.
   isAvailable Boolean @default(true)
 
-  zones DeliveryPartnerZone[]
-  runs  DailyDeliveryRun[]
+  zones   DeliveryPartnerZone[]
+  runs    DailyDeliveryRun[]
+  pickups PickupRequest[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -552,7 +559,8 @@ model DailyDeliveryRun {
   startedAt   DateTime?
   completedAt DateTime?
 
-  stops DeliveryStop[]
+  stops   DeliveryStop[]
+  pickups PickupRequest[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -615,4 +623,350 @@ model DeliveryStop {
   @@index([runId, sequence])
   @@index([status])
   @@map("delivery_stops")
+}
+
+// ---------------------------------------------------------------------------
+// Pickup, weighing, wallet & cashback (Phase 4) — the circular-economy loop.
+//
+// This is the money path. Three rules hold everywhere below:
+//
+//   1. WEIGHT IS INTEGER GRAMS. Same reasoning as money-in-paise: the smallest
+//      indivisible unit, so nothing accumulates float error on the way to a rupee.
+//
+//   2. THE LEDGER IS APPEND-ONLY. A WalletTransaction is never updated or deleted
+//      after insert — enforced by a trigger, not merely by convention. A wallet you
+//      cannot reconstruct from its ledger is a wallet you cannot defend in a dispute.
+//
+//   3. THE WALLET BALANCE IS A CACHE OF THE LEDGER. `wallets.balancePaise` exists so
+//      a read does not have to sum a million rows, but the ledger is the truth. There
+//      is a test asserting balance == sum(ledger) after every operation.
+// ---------------------------------------------------------------------------
+
+enum PaperType {
+  NEWSPAPER
+  MAGAZINE
+  OFFICE_PAPER
+  CARDBOARD
+  OTHER
+}
+
+/// A versioned price list. Exactly one is ACTIVE at a time.
+///
+/// Versioned rather than mutable: a PickupItem records the rate that applied at the
+/// moment it was weighed (`ratePerKgPaiseAtPickup`), so an admin changing today's rate
+/// can never retroactively change what a customer was paid last month. Recomputing
+/// history from a mutable rate table is how a cashback ledger stops reconciling.
+model RateCard {
+  id   String @id @default(uuid()) @db.Uuid
+  name String
+
+  /// Only one card may be active. Enforced by a partial unique index in the migration.
+  isActive Boolean @default(false)
+
+  /// Null while active; set when superseded. Kept for audit.
+  retiredAt DateTime?
+
+  items       RateCardItem[]
+  pickupItems PickupItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("rate_cards")
+}
+
+model RateCardItem {
+  id String @id @default(uuid()) @db.Uuid
+
+  rateCardId String   @db.Uuid
+  rateCard   RateCard @relation(fields: [rateCardId], references: [id], onDelete: Cascade)
+
+  paperType PaperType
+
+  /// INTEGER PAISE per kilogram. e.g. 1500 = ₹15.00/kg.
+  ratePerKgPaise Int
+
+  @@unique([rateCardId, paperType])
+  @@map("rate_card_items")
+}
+
+enum PickupStatus {
+  REQUESTED
+  ASSIGNED
+  COMPLETED
+  CANCELLED
+}
+
+/// A customer's request to have recyclable paper collected.
+model PickupRequest {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  addressId String  @db.Uuid
+  address   Address @relation(fields: [addressId], references: [id], onDelete: Restrict)
+
+  /// Date-only, like every other calendar concept here. See the Day value object.
+  scheduledDate DateTime @db.Date
+
+  /// The window the customer chose, e.g. 9-12. Advisory: routing is by run, not by hour.
+  windowStartHour Int
+  windowEndHour   Int
+
+  status PickupStatus @default(REQUESTED)
+
+  /// The customer shows this to the partner at the door; the partner scans it.
+  ///
+  /// High-entropy and UNIQUE, because scanning it is what authorises a partner to weigh
+  /// against this customer's wallet. A guessable token would let anyone credit a stranger's
+  /// pickup to themselves. Hashed? No — it is short-lived, single-purpose, and the partner
+  /// must be able to present it verbatim; the defence is entropy plus the run-ownership
+  /// check, not secrecy at rest.
+  qrToken String @unique
+
+  /// Set by the nightly planner: the run this pickup rides along with.
+  runId String?           @db.Uuid
+  run   DailyDeliveryRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  /// Denormalised for the partner's authorisation check on scan.
+  assignedPartnerId String?          @db.Uuid
+  assignedPartner   DeliveryPartner? @relation(fields: [assignedPartnerId], references: [id], onDelete: SetNull)
+
+  items PickupItem[]
+
+  /// The single wallet credit this pickup produced. One-to-one, and the FK is on the
+  /// transaction side, so a pickup cannot be credited twice.
+  walletTransaction WalletTransaction?
+
+  completedAt DateTime?
+  cancelledAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([scheduledDate, status])
+  @@index([runId])
+  @@map("pickup_requests")
+}
+
+/// One weighed paper type within a pickup.
+model PickupItem {
+  id String @id @default(uuid()) @db.Uuid
+
+  pickupId String        @db.Uuid
+  pickup   PickupRequest @relation(fields: [pickupId], references: [id], onDelete: Cascade)
+
+  paperType PaperType
+
+  /// INTEGER GRAMS. Never a float kilogram.
+  weightGrams Int
+
+  /// SNAPSHOT. The rate in force when this was weighed — not a lookup.
+  ratePerKgPaiseAtPickup Int
+
+  /// Which card that rate came from. For audit: "why was I paid ₹12/kg in March?"
+  rateCardId String   @db.Uuid
+  rateCard   RateCard @relation(fields: [rateCardId], references: [id], onDelete: Restrict)
+
+  /// THE rounded amount for this line, in paise.
+  ///
+  /// Stored, not derived. `weightGrams × ratePerKgPaise / 1000` is fractional in general
+  /// (1235 g × 1499 p/kg = 1851.265 paise), so rounding is unavoidable — and this column
+  /// is the ONE place in the money path where it happens. The wallet credit is the exact
+  /// SUM of these, so the ledger always reconciles against the items and no drift can
+  /// accumulate between "what we told the customer" and "what we paid".
+  amountPaise Int
+
+  createdAt DateTime @default(now())
+
+  /// One line per paper type per pickup. Two NEWSPAPER lines would double-count.
+  @@unique([pickupId, paperType])
+  @@map("pickup_items")
+}
+
+/// One wallet per user.
+model Wallet {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @unique @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  /// A CACHE of the ledger, in paise. BigInt because Int (32-bit) tops out around
+  /// ₹21 million — a plausible lifetime volume, not a safe ceiling.
+  ///
+  /// Never negative: a check constraint enforces it, so an overdraw aborts the
+  /// transaction rather than silently producing a customer who owes us money.
+  balancePaise BigInt @default(0)
+
+  /// INR only, but stored: a wallet without a currency is a bug waiting for expansion.
+  currency String @default("INR")
+
+  transactions WalletTransaction[]
+  withdrawals  WithdrawalRequest[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("wallets")
+}
+
+enum WalletTxnType {
+  /// Cashback from a completed pickup.
+  PICKUP_CASHBACK
+  /// Funds reserved when a withdrawal is requested (money leaves the wallet immediately).
+  WITHDRAWAL_DEBIT
+  /// Reversal when ops rejects a withdrawal. A new row — never an edit of the debit.
+  WITHDRAWAL_REVERSAL
+  /// Manual correction by ops. Always leaves an audit trail.
+  ADJUSTMENT
+}
+
+enum WalletTxnDirection {
+  CREDIT
+  DEBIT
+}
+
+/// THE LEDGER. Append-only, immutable, the single source of truth for the balance.
+///
+/// A trigger in the migration REJECTS every UPDATE and DELETE on this table. Not a
+/// convention, not a code review rule — the database refuses. The one thing that must
+/// never happen to a financial ledger is a row quietly changing after the fact, and
+/// "we agreed not to do that" is not a control.
+model WalletTransaction {
+  id String @id @default(uuid()) @db.Uuid
+
+  walletId String @db.Uuid
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  type      WalletTxnType
+  direction WalletTxnDirection
+
+  /// Always POSITIVE. The direction says which way it moves; a signed amount would let
+  /// a "negative credit" mean two different things depending on who reads it.
+  amountPaise BigInt
+
+  /// The wallet balance immediately AFTER this entry was applied.
+  ///
+  /// Stored so the ledger is self-verifying: read it in order and every balanceAfter must
+  /// equal the previous one plus/minus this amount. That is what catches a lost update —
+  /// the classic concurrency bug where two credits read the same balance and one vanishes.
+  balanceAfterPaise BigInt
+
+  /// At most one cashback transaction per pickup. THE guard against double-crediting a
+  /// pickup: a replayed completion collides here, at the database, not in a code path
+  /// someone might refactor around.
+  pickupId String?        @unique @db.Uuid
+  pickup   PickupRequest? @relation(fields: [pickupId], references: [id], onDelete: Restrict)
+
+  withdrawalId String?            @db.Uuid
+  withdrawal   WithdrawalRequest? @relation(fields: [withdrawalId], references: [id], onDelete: Restrict)
+
+  /// Free text for ADJUSTMENT, and the rejection reason on a reversal.
+  note String?
+
+  /// Who caused this. Null for system-generated cashback.
+  actorUserId String? @db.Uuid
+
+  createdAt DateTime @default(now())
+
+  // NOTE: no updatedAt. There is no update. See the trigger.
+
+  @@index([walletId, createdAt])
+  @@index([type])
+  @@map("wallet_transactions")
+}
+
+enum WithdrawalStatus {
+  /// Requested by the customer. Funds are ALREADY debited and held.
+  REQUESTED
+  /// Ops approved. Money still has to be sent by a human — see the compliance note.
+  APPROVED
+  /// Ops rejected; the debit has been reversed by a new CREDIT row.
+  REJECTED
+  /// A human confirmed the bank transfer went out.
+  PAID
+}
+
+/// A request to move wallet money to a bank account.
+///
+/// NOTHING IS AUTO-DISBURSED. Approval is a human OPS_STAFF action, and marking a
+/// payout PAID is a second, separate human action. This is deliberate and is a
+/// compliance boundary, not an engineering shortcut — see the RBI PPI note in the README.
+model WithdrawalRequest {
+  id String @id @default(uuid()) @db.Uuid
+
+  walletId String @db.Uuid
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  amountPaise BigInt
+
+  status WithdrawalStatus @default(REQUESTED)
+
+  /// Where the money is meant to go. Stored, never logged.
+  ///
+  /// Last 4 digits only, plus an opaque reference to whatever the payout rail needs.
+  /// A full account number in this table is a liability we do not need to carry in
+  /// Phase 4, where a human keys the transfer in anyway.
+  bankAccountLast4 String
+  bankIfsc         String
+  accountHolder    String
+
+  reviewedByUserId String? @db.Uuid
+  reviewedAt       DateTime?
+  rejectionReason  String?
+
+  /// Set when a human confirms the transfer left the bank.
+  paidAt        DateTime?
+  paymentRef    String?
+
+  transactions WalletTransaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status, createdAt])
+  @@map("withdrawal_requests")
+}
+
+/// Replay protection for non-idempotent, money-moving requests.
+///
+/// A delivery partner completing a pickup is standing in a doorway on a 2G connection.
+/// They WILL double-submit. The client sends an `Idempotency-Key`; the first request
+/// stores its response here, and a replay returns that same response instead of
+/// crediting the wallet twice.
+///
+/// The request fingerprint is stored too: the same key with a DIFFERENT body is a client
+/// bug (or an attack), and must be rejected loudly rather than silently returning the
+/// wrong cached answer.
+model IdempotencyKey {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Scoped to the user, so one caller cannot collide with (or probe) another's keys.
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  key String
+
+  /// METHOD + path. A key is only meaningful for the operation it was minted for.
+  endpoint String
+
+  /// SHA-256 of the request body.
+  requestHash String
+
+  /// Null while the first request is still in flight — that is what makes a concurrent
+  /// duplicate wait/fail rather than race through.
+  responseStatus Int?
+  responseBody   Json?
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, key, endpoint])
+  @@index([createdAt])
+  @@map("idempotency_keys")
 }

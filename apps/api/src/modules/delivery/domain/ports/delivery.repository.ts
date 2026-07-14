@@ -141,6 +141,18 @@ export interface DeliveryRepository {
 
   createZone(input: { name: string; city: string; pincodes: string[] }): Promise<PlannableZone>;
   listZones(): Promise<PlannableZone[]>;
+
+  /**
+   * The run covering a zone for a partner on a date, if the planner made one.
+   *
+   * Pickups ride along with the delivery round rather than getting their own dispatch:
+   * the partner is already going to that street, and a second visit would double the
+   * cost of the whole model.
+   */
+  findRunFor(runDate: Day, partnerId: string, zoneId: string): Promise<RunRecord | null>;
+
+  /** Runs planned for a date, so pickups can be slotted into them. */
+  listRunsForDate(runDate: Day): Promise<RunRecord[]>;
 }
 
 export const DELIVERY_REPOSITORY = Symbol('DELIVERY_REPOSITORY');

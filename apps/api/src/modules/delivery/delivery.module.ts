@@ -1,9 +1,10 @@
 import { BullModule } from '@nestjs/bullmq';
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { type Env } from '@/config/env.schema';
 import { AuthModule } from '@/modules/auth/auth.module';
+import { PickupsModule } from '@/modules/pickups/pickups.module';
 import { UsersModule } from '@/modules/users/users.module';
 import {
   AdminDeliveryUseCases,
@@ -31,6 +32,11 @@ import { PartnerDeliveryController } from './presentation/partner-delivery.contr
     // lookup, which the gateway repeats from the DB rather than trusting the token.
     AuthModule,
     UsersModule,
+
+    // See the note in PickupsModule: the dependency is genuinely mutual. The nightly job
+    // plans delivery runs and then slots pickups into them, because a pickup rides along
+    // with the delivery round rather than getting its own dispatch.
+    forwardRef(() => PickupsModule),
 
     BullModule.forRootAsync({
       inject: [ConfigService],
@@ -65,5 +71,10 @@ import { PartnerDeliveryController } from './presentation/partner-delivery.contr
     DeliveryPlannerScheduler,
     DeliveryPlannerWorker,
   ],
+
+  // PickupsModule needs this to check that a pickup belongs to the scanning partner, and
+  // to find the run a pickup rides along with. The PORT leaves the module, never the
+  // Prisma class.
+  exports: [DELIVERY_REPOSITORY],
 })
 export class DeliveryModule {}

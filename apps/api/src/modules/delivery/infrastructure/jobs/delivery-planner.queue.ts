@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { Queue, type Job } from 'bullmq';
 
 import { type Env } from '@/config/env.schema';
+import { AssignPickupsToRunsUseCase } from '@/modules/pickups/application/assign-pickups.use-case';
 import { Day } from '@/modules/subscriptions/domain/value-objects/day';
 import { PlanDeliveryRunsUseCase } from '../../application/delivery.use-cases';
 
@@ -72,17 +73,32 @@ export class DeliveryPlannerScheduler implements OnApplicationBootstrap {
 export class DeliveryPlannerWorker extends WorkerHost {
   private readonly logger = new Logger(DeliveryPlannerWorker.name);
 
-  constructor(private readonly planner: PlanDeliveryRunsUseCase) {
+  constructor(
+    private readonly planner: PlanDeliveryRunsUseCase,
+    private readonly pickupAssigner: AssignPickupsToRunsUseCase,
+  ) {
     super();
   }
 
-  async process(job: Job<PlanJobData>): Promise<{ created: number; unassigned: number }> {
+  async process(
+    job: Job<PlanJobData>,
+  ): Promise<{ created: number; unassigned: number; pickupsAssigned: number }> {
     const runDate = job.data.runDate === undefined ? undefined : Day.parse(job.data.runDate);
 
     this.logger.log(`Planning delivery runs (job ${job.id})`);
 
     const plan = await this.planner.execute(runDate);
 
-    return { created: plan.created, unassigned: plan.unassigned.length };
+    // Pickups are slotted in AFTER the runs exist, in the same job — a pickup rides along
+    // with the delivery round rather than getting its own dispatch. The partner is already
+    // walking that street with the morning papers; sending a second person to collect the
+    // old ones would double the cost of the entire circular model.
+    const pickups = await this.pickupAssigner.execute(plan.runDate);
+
+    return {
+      created: plan.created,
+      unassigned: plan.unassigned.length,
+      pickupsAssigned: pickups.assigned,
+    };
   }
 }

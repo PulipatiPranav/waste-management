@@ -3,9 +3,11 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 3 — delivery partners & daily runs.** Forward newspaper logistics: a
-> nightly planner that turns subscriptions into run sheets, partner delivery recording
-> with photo proof, and a live ops feed. No pickup, recycling or wallet yet.
+> **Status: Phase 4 — pickup, digital weighing, wallet & cashback.** The circular loop is
+> closed: a customer's paper is collected on the delivery round, weighed at the door, and
+> paid into an append-only wallet ledger. No recycling-partner handoff or marketplace yet.
+>
+> ⚠️ **Read [Regulatory: the wallet is not a licensed instrument](#regulatory-the-wallet-is-not-a-licensed-instrument) before piloting with real money.**
 
 ---
 
@@ -447,6 +449,135 @@ connections are refused.
 
 Publishing can never fail a delivery: the partner is standing at a door and the record is
 already in Postgres, so a dead socket is cosmetic and the dashboard refetches.
+
+## Pickup, weighing & wallet (Phase 4)
+
+```
+POST /api/v1/pickups                               customer: request a collection (returns a QR token)
+POST /api/v1/pickups/:id/cancel                    customer: cancel (refused once completed)
+POST /api/v1/delivery/pickups/scan                 partner: scan the QR at the door
+POST /api/v1/delivery/pickups/quote                partner: show the customer the figure first
+POST /api/v1/delivery/pickups/:id/complete         partner: weigh + pay        [Idempotency-Key REQUIRED]
+GET  /api/v1/wallet                                customer: balance
+GET  /api/v1/wallet/transactions                   customer: the ledger
+POST /api/v1/wallet/withdrawals                    customer: request a payout  [Idempotency-Key REQUIRED]
+POST /api/v1/admin/rates                           ops: publish a versioned rate card
+GET  /api/v1/admin/wallet/withdrawals              ops: the payout queue
+POST /api/v1/admin/wallet/withdrawals/:id/approve  ops: approve (does NOT send money)
+POST /api/v1/admin/wallet/withdrawals/:id/reject   ops: reject (reversal credit)
+POST /api/v1/admin/wallet/withdrawals/:id/mark-paid ops: confirm the transfer went out
+GET  /api/v1/admin/wallet/users/:id/reconcile      ops: replay the ledger vs the cached balance
+POST /api/v1/admin/wallet/adjustments              ops: manual correction      [Idempotency-Key REQUIRED]
+```
+
+Pickups **ride along with the delivery round**. The nightly job plans delivery runs, then
+slots that day's pickups into them: the partner is already walking the street with the
+morning papers and collects the old ones on the same pass. Sending a second person would
+double the cost of the entire circular model — that co-location _is_ the economic argument
+for the product.
+
+### Regulatory: the wallet is not a licensed instrument
+
+**This is a legal question, not an engineering one, and it is not solved in code.**
+
+Cashback held as a redeemable balance may fall under the RBI's **Prepaid Payment
+Instrument (PPI)** regulations. Whether it does depends on how the instrument is
+structured, and the distinction that matters is roughly:
+
+- a **closed** wallet (spendable only inside your own marketplace, never withdrawable to a
+  bank) generally sits outside PPI licensing; whereas
+- a **semi-closed** wallet that can be **cashed out to a bank account** — which is exactly
+  what `POST /wallet/withdrawals` does — is the case that attracts scrutiny, and KYC,
+  escrow and licensing obligations may follow.
+
+The code is deliberately built so this decision can be made _later_, by someone qualified,
+without a rewrite:
+
+- **Nothing auto-disburses.** Approving a payout and recording that the money actually left
+  the bank are two separate, human, `OPS_STAFF` actions. There is no code path from
+  "customer requested" to "money sent".
+- The withdrawal flow is one module and one state machine. If counsel says "closed wallet
+  only", you delete the withdrawal endpoints and the wallet becomes marketplace-only credit
+  (Phase 8) — the ledger, the cashback and the pickup loop are all untouched.
+
+Get this signed off before a pilot moves real money. Do not let it block building.
+
+### The ledger
+
+**Append-only, enforced by a Postgres trigger.** `UPDATE` and `DELETE` on
+`wallet_transactions` are rejected by the database. Not a convention, not a code-review
+rule — a ledger whose rows can change after the fact cannot settle a dispute or answer an
+auditor, and "we agreed not to do that" is not a control. Corrections are a **new**
+`ADJUSTMENT` row, attributed to the staff member who made it, with a note an auditor will
+read. There are tests asserting the trigger fires.
+
+**The wallet balance is a cache; the ledger is the truth.** Every entry stores the
+`balanceAfter` it produced, so the ledger is self-verifying: replay it and every step must
+match. `GET /admin/wallet/users/:id/reconcile` does exactly that, and it is the answer to
+_"why does my wallet say ₹240"_.
+
+**Concurrency is handled by `SELECT … FOR UPDATE` on the wallet row.** Without it, two
+simultaneous cashback credits both read balance=1000, both write balanceAfter=1500, and one
+silently vanishes — the customer is paid once for two pickups and the only trace is a ledger
+that stops reconciling. There is a test that fires **12 concurrent credits at one wallet**
+and asserts the balanceAfter values form an unbroken chain.
+
+### Money and weight
+
+Weight is **integer grams**; money is **integer paise**; balances are **BigInt**. A JS
+`number` silently corrupts values past ~₹90 trillion, so every money value leaves the API as
+a **string**.
+
+`weightGrams × ratePerKgPaise / 1000` is fractional in general (1235 g at ₹14.99/kg =
+1851.265 paise), so rounding is unavoidable. What is avoidable is rounding in more than one
+place. **There is exactly one rounding point in the whole money path:** each line item is
+rounded half-up, once, and stored — and the wallet credit is the _exact sum of the stored
+lines_. So the ledger always reconciles against the receipt the customer was shown. (Note
+this deliberately differs from rounding the exact grand total: three lines of 1.499 paise
+pay 3, not 4. There's a test.)
+
+Rates are **versioned, never edited**. A `PickupItem` snapshots the rate that applied when
+it was weighed, so publishing a new card changes what _future_ pickups pay and nothing else.
+Recomputing history from a mutable rate table is how a cashback ledger stops reconciling.
+
+### Paying twice is the one failure this product cannot absorb
+
+A delivery partner completing a pickup is standing in a doorway on 2G with a spinner on
+screen. **They will double-submit.** There are three independent defences, and any one of
+them alone would be sufficient:
+
+1. **`Idempotency-Key`** (required by the interceptor). A replay returns the _stored_
+   response without running the handler. The same key with a **different body** is a 409 —
+   silently returning the cached answer would be the wrong answer to a new question.
+2. **A conditional `UPDATE … WHERE status = 'ASSIGNED'`** claims the pickup. The loser of a
+   race finds `count === 0` and the whole transaction is abandoned.
+3. **`wallet_transactions.pickupId` is UNIQUE.** Even a completely bypassed key cannot
+   double-credit a pickup — the database refuses.
+
+The credit, the pickup completion and the item rows are one `$transaction`. There is a test
+that poisons it to fail at the _last_ step and asserts **no partial state**: the pickup is
+still `ASSIGNED`, no items were written, and no money moved.
+
+### Withdrawals debit at REQUEST time
+
+Not at approval. If the money stayed in the wallet until ops got round to reviewing, a
+customer could request their full balance twice — or spend it in the Phase 8 marketplace
+with a payout pending — and one of those two promises would have to be broken. A rejection
+appends a **reversal CREDIT**; the original debit is never erased, and the customer's
+statement shows both.
+
+## Known gaps (Phase 4)
+
+- **No real weighing hardware.** `WeighingDeviceReader` has a manual-entry implementation
+  that validates the numbers (whole grams, positive, plausible — 200 kg of newspaper is a
+  fat finger, not a pickup). A Bluetooth scale is a new class and one line of wiring; the
+  validation stays, because a flaky BLE link reports nonsense too.
+- **No auto-generated pickups from a subscription cadence.** Customers request each pickup
+  explicitly. The plumbing (the nightly job, zone routing) is there to add it.
+- **Idempotency keys are never garbage-collected.** The table grows forever. A retention
+  job (delete keys older than ~24h) belongs in Phase 14.
+- **No reconciliation job.** `/reconcile` exists per-wallet and on demand; nothing sweeps
+  every wallet nightly and alerts on a mismatch. That should exist before real money.
 
 ## Known gaps (Phase 3)
 

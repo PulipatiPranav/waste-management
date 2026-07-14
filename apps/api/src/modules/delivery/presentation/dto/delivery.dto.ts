@@ -214,4 +214,14 @@ export class PlanResultDto {
 
   @ApiProperty({ type: [String], description: 'Pincodes appearing in more than one active zone.' })
   ambiguousPincodes!: string[];
+
+  @ApiProperty({ description: 'Pickups slotted into a delivery run to be collected alongside it.' })
+  pickupsAssigned!: number;
+
+  @ApiProperty({
+    description:
+      'Pickups with no run to ride along with. These customers have bundled up their paper and ' +
+      'nobody is coming — each needs an ops fix.',
+  })
+  unassignedPickups!: { pickupId: string; pincode: string; reason: string }[];
 }

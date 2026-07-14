@@ -141,8 +141,15 @@ describe('Delivery (e2e)', () => {
 
   const scenario = async () => {
     zoneSeq += 1;
-    // Unique per scenario, valid Indian PIN (6 digits, no leading zero).
-    const pincode = `5${String(60000 + zoneSeq).padStart(5, '0')}`;
+    // A 9-prefixed pincode: structurally valid (6 digits, no leading zero) but not a real
+    // Indian PIN, and not one the seed data or any other suite uses.
+    //
+    // The obvious `560000 + zoneSeq` walks straight into 560038 after ~38 scenarios — a
+    // real Bengaluru pincode that the seed catalogue and other zones also claim. Two active
+    // zones then cover it, the planner deterministically picks the other one, and this
+    // suite's partner silently gets no run. The failure looks like a product bug and is
+    // agonising to trace, so the fix is to make the collision impossible.
+    const pincode = `9${String(10000 + zoneSeq).padStart(5, '0')}`;
 
     const zone = await prisma.deliveryZone.create({
       data: { name: `Zone ${suffix}-${zoneSeq}`, city: 'Bengaluru', pincodes: [pincode] },
@@ -554,9 +561,14 @@ describe('Delivery (e2e)', () => {
       const staff = await login('OPS_STAFF');
       await subscriber();
       const first = await partner();
-      const second = await partner();
 
       await planFor(staff.token, today()).expect(201);
+
+      // The SECOND partner is created only AFTER planning, on purpose. With two eligible
+      // partners in the zone the planner tie-breaks on partner uuid, so the single stop
+      // would land on either of them at random — and this test would pass or fail on a coin
+      // flip. Planning against exactly one partner makes the assignment deterministic.
+      const second = await partner();
 
       const runs = await myRuns(first.token, today()).expect(200);
       const runId = (runs.body as { id: string }[])[0]?.id ?? '';
@@ -577,9 +589,11 @@ describe('Delivery (e2e)', () => {
       const staff = await login('OPS_STAFF');
       await subscriber();
       const first = await partner();
-      const second = await partner();
 
       await planFor(staff.token, today()).expect(201);
+
+      // Second partner created after planning — see the note above.
+      const second = await partner();
 
       const runs = await myRuns(first.token, today()).expect(200);
       const run = (runs.body as { id: string; stops: { id: string }[] }[])[0];
@@ -606,9 +620,12 @@ describe('Delivery (e2e)', () => {
       const staff = await login('OPS_STAFF');
       await subscriber();
       const first = await partner();
-      const unverified = await partner({ kycStatus: 'PENDING' });
 
       await planFor(staff.token, today()).expect(201);
+
+      // Unverified, so the planner would never have picked them anyway — but created after
+      // planning regardless, to keep the assignment deterministic.
+      const unverified = await partner({ kycStatus: 'PENDING' });
 
       const runs = await myRuns(first.token, today()).expect(200);
       const runId = (runs.body as { id: string }[])[0]?.id ?? '';

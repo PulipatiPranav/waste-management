@@ -10,6 +10,7 @@ import {
 } from '@nestjs/swagger';
 
 import { Roles } from '@/modules/auth/presentation/decorators/roles.decorator';
+import { AssignPickupsToRunsUseCase } from '@/modules/pickups/application/assign-pickups.use-case';
 import { Day } from '@/modules/subscriptions/domain/value-objects/day';
 import { AdminDeliveryUseCases, PlanDeliveryRunsUseCase } from '../application/delivery.use-cases';
 import { type DeliveryPartnerRecord, type RunRecord } from '../domain/ports/delivery.repository';
@@ -35,6 +36,7 @@ export class AdminDeliveryController {
   constructor(
     private readonly admin: AdminDeliveryUseCases,
     private readonly planner: PlanDeliveryRunsUseCase,
+    private readonly pickupAssigner: AssignPickupsToRunsUseCase,
   ) {}
 
   // --- Zones ---------------------------------------------------------------
@@ -93,9 +95,9 @@ export class AdminDeliveryController {
   @ApiOperation({
     summary: 'Force a re-plan',
     description:
-      'The same operation the nightly job runs, exposed so ops can re-plan after fixing a zone ' +
-      'that had no partners, instead of waiting until 21:00. Idempotent: existing run sheets are ' +
-      'left alone, not duplicated.',
+      'The same operation the nightly job runs — delivery runs first, then pickups slotted into ' +
+      'them — exposed so ops can re-plan after fixing a zone that had no partners, instead of ' +
+      'waiting until 21:00. Idempotent: existing run sheets and assignments are left alone.',
   })
   @ApiOkResponse({ type: PlanResultDto })
   async plan(@Body() dto: PlanRunsDto): Promise<PlanResultDto> {
@@ -103,11 +105,23 @@ export class AdminDeliveryController {
       dto.runDate === undefined ? undefined : Day.parse(dto.runDate),
     );
 
+    // Pickups too, strictly after the runs exist — the SAME two steps the nightly job
+    // takes. Planning runs here without assigning pickups would mean ops "fixing" a zone
+    // and silently leaving every pickup in it stranded, which is exactly the failure this
+    // endpoint exists to repair.
+    const pickups = await this.pickupAssigner.execute(plan.runDate);
+
     return {
       runDate: plan.runDate.toString(),
       created: plan.created,
       skipped: plan.skipped,
       totalStops: plan.runs.reduce((sum, run) => sum + run.stops.length, 0),
+      pickupsAssigned: pickups.assigned,
+      unassignedPickups: pickups.unassigned.map((item) => ({
+        pickupId: item.pickupId,
+        pincode: item.pincode,
+        reason: item.reason,
+      })),
       unassigned: plan.unassigned.map((item) => ({
         subscriptionId: item.subscriptionId,
         pincode: item.pincode,

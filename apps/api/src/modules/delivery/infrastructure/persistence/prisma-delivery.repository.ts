@@ -416,6 +416,26 @@ export class PrismaDeliveryRepository implements DeliveryRepository {
     return this.loadPlannableZones();
   }
 
+  async findRunFor(runDate: Day, partnerId: string, zoneId: string): Promise<RunRecord | null> {
+    const row = await this.prisma.dailyDeliveryRun.findUnique({
+      where: {
+        runDate_partnerId_zoneId: { runDate: runDate.toUtcDate(), partnerId, zoneId },
+      },
+      include: { stops: { orderBy: { sequence: 'asc' } } },
+    });
+
+    return row === null ? null : this.toRun(row);
+  }
+
+  async listRunsForDate(runDate: Day): Promise<RunRecord[]> {
+    const rows = await this.prisma.dailyDeliveryRun.findMany({
+      where: { runDate: runDate.toUtcDate() },
+      include: { stops: { orderBy: { sequence: 'asc' } } },
+    });
+
+    return rows.map((row) => this.toRun(row));
+  }
+
   // --- Mapping --------------------------------------------------------------
 
   private toPartner(row: PartnerRow): DeliveryPartnerRecord {
