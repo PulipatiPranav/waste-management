@@ -2,7 +2,7 @@
   "name": "@cpe/api",
   "version": "0.0.0",
   "private": true,
-  "description": "Circular Paper Economy — NestJS backend",
+  "description": "Circular Paper Economy \u2014 NestJS backend",
   "scripts": {
     "postinstall": "prisma generate",
     "build": "nest build",
@@ -21,7 +21,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
-    "prisma:validate": "prisma validate"
+    "prisma:validate": "prisma validate",
+    "db:seed": "prisma db seed"
   },
   "dependencies": {
     "@cpe/shared-types": "workspace:*",
@@ -78,5 +79,8 @@
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/$1"
     }
+  },
+  "prisma": {
+    "seed": "ts-node -r tsconfig-paths/register prisma/seed.ts"
   }
 }

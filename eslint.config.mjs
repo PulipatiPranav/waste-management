@@ -106,5 +106,15 @@ export default tseslint.config(
     },
   },
 
+  {
+    // Standalone CLI scripts (the Prisma seed). These are run by a human at a terminal,
+    // where printing to stdout is the entire point — unlike the server, which uses the
+    // structured Nest logger so that log lines are parseable in an aggregator.
+    files: ['apps/api/prisma/**/*.ts'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+
   prettier,
 );

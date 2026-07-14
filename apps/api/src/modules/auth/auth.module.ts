@@ -130,6 +130,9 @@ import { RolesGuard } from './presentation/guards/roles.guard';
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
 
-  exports: [SECRET_HASHER],
+  // CLOCK is exported so other modules get testable time from the same port rather than
+  // each reaching for `new Date()` — which is what makes the subscription date rules
+  // (backdating, "paused from today") assertable without waiting for tomorrow.
+  exports: [SECRET_HASHER, CLOCK],
 })
 export class AuthModule {}

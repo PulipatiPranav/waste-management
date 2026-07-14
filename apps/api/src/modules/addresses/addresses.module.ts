@@ -8,5 +8,8 @@ import { AddressesController } from './presentation/addresses.controller';
 @Module({
   controllers: [AddressesController],
   providers: [{ provide: ADDRESS_REPOSITORY, useClass: PrismaAddressRepository }, AddressUseCases],
+  // SubscriptionsModule verifies that a delivery address belongs to the subscribing
+  // customer, and reads its pincode to check the edition's delivery footprint.
+  exports: [ADDRESS_REPOSITORY],
 })
 export class AddressesModule {}

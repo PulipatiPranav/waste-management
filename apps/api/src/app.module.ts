@@ -3,7 +3,9 @@ import { type MiddlewareConsumer, Module, type NestModule } from '@nestjs/common
 import { ConfigModule } from './config/config.module';
 import { AddressesModule } from './modules/addresses/addresses.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { CatalogModule } from './modules/catalog/catalog.module';
 import { HealthModule } from './modules/health/health.module';
+import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { UsersModule } from './modules/users/users.module';
 import { RedisModule } from './shared/infrastructure/cache/redis.module';
 import { PrismaModule } from './shared/infrastructure/persistence/prisma/prisma.module';
@@ -25,6 +27,8 @@ import { CorrelationIdMiddleware } from './shared/presentation/middleware/correl
     AuthModule,
     UsersModule,
     AddressesModule,
+    CatalogModule,
+    SubscriptionsModule,
     HealthModule,
   ],
 })

@@ -3,9 +3,9 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 1 — auth, users, roles.** Phone-OTP login, JWT sessions with
-> refresh-token rotation, role guards, and user/address CRUD. No subscription,
-> delivery, pickup or wallet features yet.
+> **Status: Phase 2 — newspaper catalogue & subscriptions.** On top of Phase 1's auth:
+> a catalogue of publishers/newspapers/city editions, and the subscription lifecycle
+> with prorated billing. No delivery logistics, pickup or wallet yet.
 
 ---
 
@@ -281,6 +281,101 @@ to the log stream. A real provider (MSG91/Twilio) is a new class implementing
 `trust proxy` is set to `1` in `configureApp`. It must match the number of proxy hops
 in front of the API: too low and every client shares one rate-limit bucket, too high
 (or `true`) and a client can spoof `X-Forwarded-For` to mint unlimited buckets.
+
+## Catalogue & subscriptions (Phase 2)
+
+```
+GET  /api/v1/catalog/editions?pincode=560038&language=KANNADA   browse what you can actually buy
+GET  /api/v1/subscriptions/quote?editionId=…&frequency=DAILY…   what would this cost?
+POST /api/v1/subscriptions                                      subscribe
+POST /api/v1/subscriptions/:id/{pause,resume,cancel}            lifecycle
+POST /api/v1/subscriptions/:id/change-address
+GET  /api/v1/subscriptions/:id/charge-preview                   prorated charge for this period
+POST /api/v1/admin/catalog/{publishers,newspapers,editions}     OPS_STAFF / SUPER_ADMIN only
+```
+
+`pnpm --filter @cpe/api exec prisma db seed` loads a realistic catalogue (7 publishers,
+11 newspapers across 7 Indian languages, 15 city editions). It is idempotent — it
+upserts on natural keys rather than truncating, so it will not wipe a database that has
+real subscriptions in it.
+
+### Money is integer paise. Everywhere.
+
+Never a float, never a `Decimal`, never rupees. Every money value here gets multiplied
+(price × issues), split (proration) or summed (the Phase 4 ledger), and integers make
+those operations exact and associative. Rupees exist only at the presentation edge, as
+a formatted **string** — `450 / 100` is `4.5` in JavaScript, and a client that renders
+that shows "₹4.5".
+
+### Why proration has no rounding step
+
+**A newspaper is priced per ISSUE, not per month.** So a bill is a count, not a
+division:
+
+```
+amount = pricePerIssue × (issues actually delivered)
+```
+
+The obvious alternative — `monthlyPrice × daysActive / daysInMonth` — is where the
+off-by-one billing bugs in this class of system come from. It needs a rounding rule;
+that rule has to stay consistent across start, pause, resume and cancel; February and
+31-day months disagree; and the rounded halves of a split month don't add back up to
+the whole. Counting issues has none of those problems: 450 paise × 26 issues = 11,700
+paise, exactly, on any calendar. There's a test asserting the two halves of a split
+month sum to the whole, precisely because the naive formula fails it.
+
+Consequences worth knowing:
+
+- **Days are a `Day` value object, not a `Date`.** An instant is "the 17th" in
+  Bengaluru and "the 16th" in London, so a `Date` would make a subscription's first
+  billable day depend on who's asking, and every boundary test a coin flip.
+- **Ranges are inclusive at both ends.** Subscribe on the 17th of a 31-day month and
+  you're billed 15 issues, not 14. Cancel on the 10th and you're billed for the 10th —
+  you got that morning's paper.
+- **`resumedFrom` is the first day delivery RESUMES**, so the last paused day is the day
+  before. Reading it as inclusive-of-pause would make every pause one day too generous.
+- **Pauses are an append-only log**, not two columns on the subscription. A customer who
+  pauses twice in a month has two windows; collapsing them would lose one and
+  overcharge. A partial unique index enforces at most one _open_ pause.
+- **The price is copied onto the subscription at signup.** An admin raising the
+  catalogue price does not silently re-bill existing subscribers, and every past invoice
+  still recomputes to the figure it was issued at.
+
+### The state machine
+
+`ACTIVE ⇄ PAUSED`, both → `CANCELLED`, and **`CANCELLED` is terminal**. One transition
+table in `subscription-state-machine.ts` answers every lifecycle question. The
+alternative — an `if (status !== 'CANCELLED')` here, a `status === 'PAUSED'` there — is
+how a subscription becomes resumable after cancellation: not because anyone decided
+that, but because one of five scattered checks forgot a case.
+
+Redundant transitions are **errors, not silent no-ops**: pausing an already-paused
+subscription returns 409, because accepting it would open a second pause window and
+credit the same skipped issues twice.
+
+Status changes only ever happen through `POST /:id/pause|resume|cancel`. There is
+deliberately no `PATCH { status }` — a client that can send `{"status":"ACTIVE"}` can
+drive the subscription into any state it likes, and the transition table becomes
+advisory.
+
+### Delivery footprint
+
+An edition lists the pincodes it's actually delivered to. Subscribing — and changing
+address — is refused (`PINCODE_NOT_SERVICED`) outside that list, and the browse endpoint
+never shows an edition you can't buy. The failure this prevents is the worst kind: a
+customer who subscribes successfully, is billed successfully, and receives nothing,
+because it looks like success to everyone until they complain.
+
+## Known gaps (Phase 2)
+
+- **Nothing is invoiced or charged.** `charge-preview` and `quote` compute the amount;
+  no money moves and no invoice row is written. That is Phase 4, alongside the wallet.
+- **Pause and cancel take effect from today only** — you cannot schedule "pause from next
+  Monday". Backdating is refused outright (`BACKDATED_CHANGE`), because it would rewrite
+  an invoice that has already been issued.
+- **`QUARTERLY` billing is implemented and tested, but no product uses it yet.**
+- **Delivery scheduling does not exist.** A subscription says which issues are billable;
+  nothing yet turns that into a run sheet. Phase 3.
 
 ## Known gaps (Phase 1)
 

@@ -2,8 +2,22 @@
 //
 // Conventions:
 //   - Table names are snake_case via @@map; Prisma models stay PascalCase.
-//   - Money is `Decimal @db.Decimal(12, 2)` — never Float. Floating-point rupees in
-//     a cashback ledger produce reconciliation bugs that are painful to unwind.
+//   - MONEY IS INTEGER PAISE (`Int`), never Float and never Decimal.
+//
+//     Paise — the smallest indivisible unit — because every money value in this system
+//     eventually gets multiplied (price × issues), split (proration) or summed
+//     (cashback ledger), and integers make those operations exact and associative.
+//     Float is disqualified outright. Decimal would also be exact here, but it drags
+//     decimal.js into the domain layer, which is meant to be framework-free, and it
+//     leaves "how do we round?" as an open question at every call site. With integers
+//     there is nothing to round: 450 paise × 26 issues = 11700 paise, full stop.
+//
+//     Rupees exist only at the presentation edge, for display. Nothing in the domain
+//     or the database holds a rupee.
+//
+//     Use BigInt for running totals and ledger balances (Int is 32-bit — it tops out
+//     at ~₹21 million, which is a plausible lifetime volume, not a safe ceiling).
+//
 //   - Weights are `Decimal @db.Decimal(10, 3)` (grams of precision on a kg value).
 //   - Ledger tables are append-only: no updatedAt, no in-place mutation.
 
@@ -54,6 +68,7 @@ model User {
 
   addresses     Address[]
   refreshTokens RefreshToken[]
+  subscriptions Subscription[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -131,6 +146,10 @@ model Address {
   user      User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
   apartment Apartment? @relation(fields: [apartmentId], references: [id], onDelete: Cascade)
   business  Business?  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  /// onDelete: Restrict on the far side — an address with a live subscription pointing
+  /// at it cannot be deleted out from under the delivery run.
+  subscriptions Subscription[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -221,4 +240,193 @@ model RefreshToken {
   @@index([family])
   @@index([expiresAt])
   @@map("refresh_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+enum Language {
+  ENGLISH
+  HINDI
+  KANNADA
+  TAMIL
+  TELUGU
+  MALAYALAM
+  MARATHI
+  BENGALI
+  GUJARATI
+  URDU
+  PUNJABI
+  ODIA
+}
+
+model Publisher {
+  id       String  @id @default(uuid()) @db.Uuid
+  name     String  @unique
+  website  String?
+  isActive Boolean @default(true)
+
+  newspapers Newspaper[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("publishers")
+}
+
+model Newspaper {
+  id            String   @id @default(uuid()) @db.Uuid
+  name          String
+  language      Language
+  coverImageUrl String?
+
+  publisherId String    @db.Uuid
+  publisher   Publisher @relation(fields: [publisherId], references: [id], onDelete: Restrict)
+
+  /// Soft availability switch. Catalog rows are never hard-deleted once a Subscription
+  /// has ever pointed at them — see the onDelete: Restrict on editions.
+  isActive Boolean @default(true)
+
+  editions NewspaperEdition[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// The same masthead can publish in several languages; the pair is what is unique.
+  @@unique([publisherId, name, language])
+  @@index([language])
+  @@map("newspapers")
+}
+
+/// A newspaper as sold in one city: its own price and its own delivery footprint.
+///
+/// The edition — not the newspaper — is what a customer subscribes to, because The
+/// Hindu in Bengaluru and The Hindu in Chennai are different products with different
+/// prices and different serviceable pincodes.
+model NewspaperEdition {
+  id String @id @default(uuid()) @db.Uuid
+
+  newspaperId String    @db.Uuid
+  newspaper   Newspaper @relation(fields: [newspaperId], references: [id], onDelete: Cascade)
+
+  city  String
+  state String
+
+  /// Pincodes this edition is actually delivered to. A customer whose address falls
+  /// outside this list must not be able to subscribe — the van does not go there.
+  servicePincodes String[]
+
+  /// INTEGER PAISE. See the money convention at the top of this file.
+  ///
+  /// Price is per ISSUE, not per month. That is the whole reason proration in this
+  /// system has no rounding step: a bill is `pricePerIssuePaise × issues delivered`,
+  /// so a subscription that starts on the 17th is charged for exactly the issues it
+  /// receives. Dividing a monthly price by days would reintroduce the rounding — and
+  /// the off-by-one — that this model avoids.
+  pricePerIssuePaise Int
+
+  isAvailable Boolean @default(true)
+
+  subscriptions Subscription[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([newspaperId, city])
+  @@index([city])
+  @@index([servicePincodes], type: Gin)
+  @@map("newspaper_editions")
+}
+
+// ---------------------------------------------------------------------------
+// Subscriptions
+// ---------------------------------------------------------------------------
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+/// Which days an issue is delivered. Drives both billing and (in Phase 3) the run sheet.
+enum DeliveryFrequency {
+  DAILY
+  WEEKDAYS
+  WEEKENDS
+  SUNDAY_ONLY
+}
+
+enum BillingCycle {
+  MONTHLY
+  QUARTERLY
+}
+
+model Subscription {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  editionId String           @db.Uuid
+  edition   NewspaperEdition @relation(fields: [editionId], references: [id], onDelete: Restrict)
+
+  deliveryAddressId String  @db.Uuid
+  deliveryAddress   Address @relation(fields: [deliveryAddressId], references: [id], onDelete: Restrict)
+
+  status    SubscriptionStatus @default(ACTIVE)
+  frequency DeliveryFrequency  @default(DAILY)
+
+  billingCycle BillingCycle @default(MONTHLY)
+
+  /// Date-only semantics (midnight UTC). A subscription starts on a DAY, not at an
+  /// instant — storing 2026-07-14T18:30:00+05:30 would make "is this day billable?"
+  /// depend on the reader's timezone, and half the boundary tests would flip.
+  startDate DateTime @db.Date
+
+  /// Set when cancelled. Kept (rather than deleting the row) because the final invoice
+  /// still has to be computed from it, and Phase 6's impact history reads it.
+  cancelledAt DateTime?
+
+  /// The price in force when the customer subscribed, copied off the edition.
+  ///
+  /// Copied, not looked up. If an admin raises the edition's price, existing
+  /// subscribers must not be silently re-billed at the new rate — and every past
+  /// invoice must still recompute to the same number it did when it was issued.
+  pricePerIssuePaiseAtSubscription Int
+
+  pauses SubscriptionPause[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([editionId])
+  @@index([status])
+  @@map("subscriptions")
+}
+
+/// One pause window. An append-only log, not a mutable pair of columns on Subscription.
+///
+/// Billing has to answer "which issues did this customer actually miss, in this
+/// period?", and a customer who pauses twice in one month has two windows. Collapsing
+/// them into `pausedAt`/`resumedAt` on the subscription row would lose the first one,
+/// and the invoice would silently overcharge.
+model SubscriptionPause {
+  id String @id @default(uuid()) @db.Uuid
+
+  subscriptionId String       @db.Uuid
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  /// Inclusive: no issue is delivered on this day.
+  pausedFrom DateTime @db.Date
+
+  /// Inclusive: the first day delivery RESUMES is resumedFrom.
+  /// Null means the pause is still open.
+  resumedFrom DateTime? @db.Date
+
+  createdAt DateTime @default(now())
+
+  @@index([subscriptionId, pausedFrom])
+  @@map("subscription_pauses")
 }

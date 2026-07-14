@@ -1,4 +1,8 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "dist", "test", "**/*.spec.ts", "**/*.e2e-spec.ts"]
+  // `prisma` is excluded here even though tsconfig.json includes it (so that the seed
+  // script still gets typechecked and linted). If it were compiled, tsc's inferred
+  // rootDir would widen from `src/` to `apps/api/`, and the entrypoint would silently
+  // move from `dist/main.js` to `dist/src/main.js` — breaking the Dockerfile's CMD.
+  "exclude": ["node_modules", "dist", "test", "prisma", "**/*.spec.ts", "**/*.e2e-spec.ts"]
 }
