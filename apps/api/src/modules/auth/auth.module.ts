@@ -133,6 +133,9 @@ import { RolesGuard } from './presentation/guards/roles.guard';
   // CLOCK is exported so other modules get testable time from the same port rather than
   // each reaching for `new Date()` — which is what makes the subscription date rules
   // (backdating, "paused from today") assertable without waiting for tomorrow.
-  exports: [SECRET_HASHER, CLOCK],
+  // TOKEN_ISSUER is exported for the delivery WebSocket gateway: the global JwtAuthGuard
+  // is an HTTP guard and never sees a socket handshake, so the gateway has to verify the
+  // token itself. Anything that authenticates outside the HTTP pipeline needs this.
+  exports: [SECRET_HASHER, CLOCK, TOKEN_ISSUER],
 })
 export class AuthModule {}

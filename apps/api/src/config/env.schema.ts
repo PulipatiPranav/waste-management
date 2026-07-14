@@ -79,6 +79,42 @@ export const envSchema = z.object({
    * no user ever receives a code, and every code is printed into the log stream.
    */
   SMS_PROVIDER: z.enum(['console']).default('console'),
+
+  // --- Delivery (Phase 3) ---------------------------------------------------
+
+  /** Used to build signed proof-of-delivery URLs. No trailing slash. */
+  PUBLIC_BASE_URL: z.string().url().default('http://localhost:3000'),
+
+  /**
+   * `local` writes delivery photos to disk. Dev only — REFUSED in production (see the
+   * superRefine below), where the files would vanish with the pod and there would be no
+   * replication, no lifecycle policy and no way to answer a delivery dispute.
+   */
+  STORAGE_PROVIDER: z.enum(['local']).default('local'),
+  STORAGE_LOCAL_DIR: z.string().default('./.storage'),
+
+  /** Proof photos show the inside of a customer's doorway. Keep the window short. */
+  STORAGE_SIGNED_URL_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+
+  /** A phone camera JPEG. Anything larger is a mistake or an attack. */
+  DELIVERY_PHOTO_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(5 * 1024 * 1024),
+
+  /**
+   * When the nightly planner runs, as a cron expression, in the API's timezone.
+   * 21:00 by default: late enough that the day's subscription changes have settled,
+   * early enough that ops can look at the unassigned list before the 5am round.
+   */
+  DELIVERY_PLANNER_CRON: z.string().default('0 21 * * *'),
+
+  /** Set false in tests and in any replica that must not run background jobs. */
+  DELIVERY_PLANNER_ENABLED: z
+    .string()
+    .default('true')
+    .transform((value) => value === 'true'),
 });
 
 /**
@@ -93,6 +129,17 @@ export const envSchemaWithRules = envSchema.superRefine((env, ctx) => {
         'The console SMS provider cannot be used in production: no user would ever receive a code, ' +
         'and every OTP would be written to the log stream in plaintext. Implement a real SmsProvider ' +
         '(MSG91/Twilio) and add it to the SMS_PROVIDER enum before deploying.',
+    });
+  }
+
+  if (env.NODE_ENV === 'production' && env.STORAGE_PROVIDER === 'local') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['STORAGE_PROVIDER'],
+      message:
+        'Local disk storage cannot be used in production: proof-of-delivery photos would vanish ' +
+        'with the pod, leaving no way to settle a delivery dispute. Implement an S3-compatible ' +
+        'StorageProvider and add it to the STORAGE_PROVIDER enum before deploying.',
     });
   }
 

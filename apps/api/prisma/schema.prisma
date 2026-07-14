@@ -70,6 +70,9 @@ model User {
   refreshTokens RefreshToken[]
   subscriptions Subscription[]
 
+  /// Set only for users with role DELIVERY_PARTNER.
+  deliveryPartner DeliveryPartner?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -149,7 +152,8 @@ model Address {
 
   /// onDelete: Restrict on the far side — an address with a live subscription pointing
   /// at it cannot be deleted out from under the delivery run.
-  subscriptions Subscription[]
+  subscriptions  Subscription[]
+  deliveryStops  DeliveryStop[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -395,7 +399,8 @@ model Subscription {
   /// invoice must still recompute to the same number it did when it was issued.
   pricePerIssuePaiseAtSubscription Int
 
-  pauses SubscriptionPause[]
+  pauses        SubscriptionPause[]
+  deliveryStops DeliveryStop[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -429,4 +434,185 @@ model SubscriptionPause {
 
   @@index([subscriptionId, pausedFrom])
   @@map("subscription_pauses")
+}
+
+// ---------------------------------------------------------------------------
+// Delivery (Phase 3) — forward newspaper logistics only. No pickup/recycling.
+// ---------------------------------------------------------------------------
+
+enum KycStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum VehicleType {
+  ON_FOOT
+  BICYCLE
+  SCOOTER
+  MOTORCYCLE
+  CAR
+}
+
+/// A delivery area, defined as a list of pincodes.
+///
+/// Pincodes rather than polygons, deliberately: a pincode list is something an ops
+/// person can edit in a form and reason about, and it joins directly against the
+/// pincode already on every Address. Polygons need GIS tooling, a map UI and a
+/// point-in-polygon query on the hot path of the nightly job — all to solve a problem
+/// (sub-pincode granularity) we do not have yet. Documented as a future change.
+model DeliveryZone {
+  id   String @id @default(uuid()) @db.Uuid
+  name String @unique
+  city String
+
+  /// A pincode may appear in more than one zone. The assignment job resolves that
+  /// deterministically and warns — see resolveZone() in the planner.
+  pincodes String[]
+
+  isActive Boolean @default(true)
+
+  partners DeliveryPartnerZone[]
+  runs     DailyDeliveryRun[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([city])
+  @@index([pincodes], type: Gin)
+  @@map("delivery_zones")
+}
+
+model DeliveryPartner {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// One partner profile per user. The user's role must be DELIVERY_PARTNER; that is
+  /// enforced in the onboarding use case, and the guard reads the role from the DB.
+  userId String @unique @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  kycStatus   KycStatus   @default(PENDING)
+  vehicleType VehicleType @default(BICYCLE)
+
+  /// Ops kill-switch. An offboarded partner keeps their history but is never assigned
+  /// new work — which is why assignment filters on this rather than deleting the row.
+  isActive Boolean @default(true)
+
+  /// Self-declared "I am working tomorrow". Distinct from isActive: a partner on leave
+  /// is unavailable but very much still onboarded.
+  isAvailable Boolean @default(true)
+
+  zones DeliveryPartnerZone[]
+  runs  DailyDeliveryRun[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kycStatus])
+  @@map("delivery_partners")
+}
+
+/// Explicit join table: a partner can work several zones, a zone has several partners.
+model DeliveryPartnerZone {
+  partnerId String          @db.Uuid
+  partner   DeliveryPartner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+
+  zoneId String       @db.Uuid
+  zone   DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([partnerId, zoneId])
+  @@index([zoneId])
+  @@map("delivery_partner_zones")
+}
+
+enum RunStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+}
+
+/// One partner's work for one zone on one day.
+model DailyDeliveryRun {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Date-only, like Subscription.startDate. A run belongs to a DAY, not an instant —
+  /// see the Day value object for why an instant would make "today" reader-dependent.
+  runDate DateTime @db.Date
+
+  partnerId String          @db.Uuid
+  partner   DeliveryPartner @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+
+  zoneId String       @db.Uuid
+  zone   DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+
+  status RunStatus @default(PENDING)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  stops DeliveryStop[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// One run per partner per zone per day. This is what makes the nightly job
+  /// idempotent: a re-run (a retry, a manual kick, two workers racing) collides here
+  /// instead of quietly issuing a partner a second, duplicate run sheet.
+  @@unique([runDate, partnerId, zoneId])
+  @@index([runDate, status])
+  @@map("daily_delivery_runs")
+}
+
+enum StopStatus {
+  PENDING
+  DELIVERED
+  FAILED
+  SKIPPED
+}
+
+/// One subscription's delivery, on one day. The unit of work the partner actually acts on.
+model DeliveryStop {
+  id String @id @default(uuid()) @db.Uuid
+
+  runId String           @db.Uuid
+  run   DailyDeliveryRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  subscriptionId String       @db.Uuid
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+
+  /// Snapshotted from the subscription at planning time.
+  ///
+  /// A customer who changes their delivery address at 6am must not silently re-route a
+  /// run sheet the partner already has on their phone and is halfway through. The
+  /// change takes effect on the NEXT run, which is also what the partner expects.
+  addressId String  @db.Uuid
+  address   Address @relation(fields: [addressId], references: [id], onDelete: Restrict)
+
+  status StopStatus @default(PENDING)
+
+  /// Required for FAILED and SKIPPED, forbidden for DELIVERED — enforced in the domain.
+  /// "Failed" with no reason is a support ticket nobody can answer.
+  reason String?
+
+  /// Object key, not a URL. URLs expire, buckets get renamed, and CDNs change; the key
+  /// is the stable identity. The StorageProvider mints a signed URL on read.
+  photoKey String?
+
+  /// Sequence within the run. Insertion order for now — route optimisation is a
+  /// documented future enhancement (see the planner), NOT built here.
+  sequence Int
+
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// A subscription gets at most ONE stop per run. Belt-and-braces against a planner
+  /// bug double-adding a customer whose pincode falls in two overlapping zones.
+  @@unique([runId, subscriptionId])
+  @@index([runId, sequence])
+  @@index([status])
+  @@map("delivery_stops")
 }

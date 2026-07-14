@@ -20,3 +20,7 @@ allowBuilds:
   argon2: true
   # Anonymous analytics pinger. Nothing depends on it running.
   "@scarf/scarf": false
+  # Optional native fast-path for msgpackr (socket.io's serialiser). It falls back to
+  # a pure-JS implementation if unbuilt, so this is a performance choice, not a
+  # correctness one — but the native path is what the library expects in production.
+  msgpackr-extract: true

@@ -4,6 +4,7 @@ import { ConfigModule } from './config/config.module';
 import { AddressesModule } from './modules/addresses/addresses.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
+import { DeliveryModule } from './modules/delivery/delivery.module';
 import { HealthModule } from './modules/health/health.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { UsersModule } from './modules/users/users.module';
@@ -29,6 +30,7 @@ import { CorrelationIdMiddleware } from './shared/presentation/middleware/correl
     AddressesModule,
     CatalogModule,
     SubscriptionsModule,
+    DeliveryModule,
     HealthModule,
   ],
 })

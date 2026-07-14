@@ -57,3 +57,6 @@ Thumbs.db
 *.log
 npm-debug.log*
 pnpm-debug.log*
+
+# local dev object storage (delivery proof photos)
+.storage/

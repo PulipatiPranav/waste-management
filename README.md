@@ -3,9 +3,9 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 2 — newspaper catalogue & subscriptions.** On top of Phase 1's auth:
-> a catalogue of publishers/newspapers/city editions, and the subscription lifecycle
-> with prorated billing. No delivery logistics, pickup or wallet yet.
+> **Status: Phase 3 — delivery partners & daily runs.** Forward newspaper logistics: a
+> nightly planner that turns subscriptions into run sheets, partner delivery recording
+> with photo proof, and a live ops feed. No pickup, recycling or wallet yet.
 
 ---
 
@@ -365,6 +365,105 @@ address — is refused (`PINCODE_NOT_SERVICED`) outside that list, and the brows
 never shows an edition you can't buy. The failure this prevents is the worst kind: a
 customer who subscribes successfully, is billed successfully, and receives nothing,
 because it looks like success to everyone until they complain.
+
+## Delivery (Phase 3)
+
+```
+GET  /api/v1/delivery/my-runs?date=…                partner: today's run sheet
+POST /api/v1/delivery/stops/:id/photo               partner: proof photo (multipart)
+POST /api/v1/delivery/stops/:id/outcome             partner: DELIVERED / FAILED / SKIPPED
+POST /api/v1/admin/delivery/zones                   ops: define a zone (pincode list)
+POST /api/v1/admin/delivery/partners                ops: onboard (KYC starts PENDING)
+PATCH /api/v1/admin/delivery/partners/:id           ops: verify KYC, offboard, set zones
+POST /api/v1/admin/delivery/plan                    ops: force a re-plan (idempotent)
+GET  /api/v1/admin/delivery/completion?date=…       ops: completion rates
+POST /api/v1/admin/delivery/runs/:id/reassign       ops: hand a run to another partner
+ws://…/delivery                                     ops: live feed (staff only)
+```
+
+A **nightly BullMQ job** (`DELIVERY_PLANNER_CRON`, 21:00 by default) turns tomorrow's
+active subscriptions into run sheets. `POST /admin/delivery/plan` runs the same code, so
+ops can re-plan immediately after fixing a zone rather than waiting for the cron.
+
+### The planner is a pure function
+
+`planRuns()` takes subscriptions + zones + partners + a date and returns a plan. No
+database, no clock, no queue. That's deliberate: this is the piece most likely to be
+wrong, and every case the brief warns about is testable as arithmetic (32 unit tests)
+rather than as a fixture and a job run.
+
+What it gets right, and why each one matters:
+
+- **Load is balanced across a partner's TOTAL day, not per zone.** A partner who works
+  two zones would otherwise get a full round in each — double everyone else's. This is
+  the "partners in overlapping zones" bug, and naive round-robin walks straight into it.
+- **A pincode in two zones produces exactly ONE stop**, with the tie broken
+  deterministically (lowest zone id) and the overlap reported. Two stops means the
+  customer gets two papers and you pay two partners for one delivery. Picking
+  _arbitrarily_ would make the job non-deterministic — a different run sheet every night,
+  and no way to reproduce a complaint.
+- **Unassignable customers are reported, never dropped.** `NO_ZONE` (no zone covers their
+  pincode) and `NO_PARTNER` (nobody active, available and KYC-verified) are returned and
+  logged at error level. A silently-dropped customer is billed and receives nothing —
+  the failure that looks like success to everyone until they call.
+- **Only KYC-VERIFIED partners are ever assigned work**, and reassignment enforces the
+  same bar. "Just let them work until verification comes through" is precisely what KYC
+  exists to prevent: an unvetted stranger with a list of customers' home addresses.
+- **It reuses Phase 2's delivery calendar.** If delivery had its own notion of "is today
+  a delivery day", the two would drift and you'd bill for issues you never printed a run
+  sheet for. One calendar, both answers — including the pause windows and the inclusive
+  cancellation day.
+
+Idempotency is enforced by `@@unique([runDate, partnerId, zoneId])`: a retry, a manual
+kick, or two workers racing collide on the index rather than issuing a partner a second
+run sheet mid-round.
+
+### Recording a delivery
+
+An outcome is **recorded once**. A partner on a flaky mobile network _will_ double-submit,
+so the write is a conditional `UPDATE … WHERE status = 'PENDING'` — the second request
+gets a 409 instead of silently overwriting the first one's reason, photo and timestamp.
+By Phase 4 that record decides whether the customer is billed.
+
+`FAILED` and `SKIPPED` must carry a reason; `DELIVERED` must not. Enforced in the domain
+_and_ as a DB check constraint — application-only is one bad write path from being untrue,
+DB-only surfaces as a 500. "Failed" with no reason is a dispute nobody can settle.
+
+Photo upload is a **separate call** from recording the outcome, so a failed 3MB upload on
+a bad connection doesn't throw away the fact that the paper was delivered (and Phase 13's
+offline queue can retry the two independently). Storage goes through a `StorageProvider`
+port — swapping the local dev adapter for S3/MinIO/R2 is one class and one line of
+wiring. Photos are served as **short-lived signed URLs**: they show the inside of a
+customer's doorway, and object keys are guessable enough that "nobody will find it" is not
+a security model.
+
+### The WebSocket is authenticated separately — and that's not optional
+
+The global `JwtAuthGuard` is an **HTTP** guard; a socket handshake never passes through
+it. The gateway therefore authenticates its own connections and checks the role **from the
+database**, exactly like the HTTP guard. Get this wrong and a "secured" API leaks a live
+feed of where customers live to anyone who opens a socket. Anonymous and non-staff
+connections are refused.
+
+Publishing can never fail a delivery: the partner is standing at a door and the record is
+already in Postgres, so a dead socket is cosmetic and the dashboard refetches.
+
+## Known gaps (Phase 3)
+
+- **Route optimisation is not built.** Stops are sequenced in insertion order. Real
+  routing needs geocoded addresses (we don't collect them yet) and is premature before
+  real partners have walked real routes.
+- **Zones are pincode lists, not polygons.** Deliberate: an ops person can edit a pincode
+  list, and it joins directly against the pincode already on every address. Polygons need
+  GIS tooling and a point-in-polygon query on the planner's hot path, to solve a
+  sub-pincode granularity problem we don't have.
+- **Socket.io has no Redis adapter yet**, so with more than one API replica an event only
+  reaches admins connected to the _same pod_. Redis is already a dependency; this is a
+  wiring change in Phase 15, not a redesign.
+- **A reassigned run is all-or-nothing** — refused once any stop is actioned. Splitting a
+  half-done run is a different operation and needs designing, not falling into.
+- **Local disk storage is dev-only.** The API refuses to boot with
+  `NODE_ENV=production` and `STORAGE_PROVIDER=local`.
 
 ## Known gaps (Phase 2)
 
