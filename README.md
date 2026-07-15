@@ -3,10 +3,10 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 5 — recycling partners & chain of custody.** The loop reaches the mill:
-> collected paper is batched by zone and paper type, dispatched to a verified recycler, and
-> reconciled against their weighbridge. Every gram is traceable end to end. No sustainability
-> reporting or marketplace yet.
+> **Status: Phase 6 — sustainability impact engine.** Confirmed-recycled weight is converted
+> into estimated CO2 avoided, water and energy saved, trees-equivalent and landfill diversion,
+> using cited conversion factors, and served as per-user / per-org / per-platform dashboards.
+> No marketplace yet.
 >
 > ⚠️ **Read [Regulatory: the wallet is not a licensed instrument](#regulatory-the-wallet-is-not-a-licensed-instrument) before piloting with real money.**
 >
@@ -626,11 +626,68 @@ float that renders as 2.4999998% in one report and 2.5% in another is an argumen
 Verified mills only — the same KYC bar as delivery partners. An unverified mill is a stranger
 you'd be handing tonnes of a customer's property to.
 
+## Sustainability impact (Phase 6)
+
+```
+GET  /api/v1/impact/me                              customer: my recycling impact
+GET  /api/v1/admin/impact/platform                  ops: whole-platform totals
+GET  /api/v1/admin/impact/users/:id                 ops: a customer's impact (support / their ESG)
+GET  /api/v1/admin/impact/apartments/:id            ops: an apartment's aggregate (zero until Phase 7)
+GET  /api/v1/admin/impact/businesses/:id            ops: a business's aggregate for their CSR report
+POST /api/v1/admin/impact/refresh                   ops: force a cache recompute
+```
+
+Each report is **lifetime totals + a monthly trend**, served from a nightly cache
+(`IMPACT_AGGREGATION_CRON`, 05:00 — after batching), because these numbers are read far more
+than they change.
+
+### Defensibility is the whole feature
+
+Every figure is `confirmed-recycled kg × a coefficient`, and when a business customer's ESG
+auditor asks _"where did this number come from"_, the answer is a citation, not a shrug. The
+conversion factors live in exactly **one** constant (`sustainability-factors.ts`), each with
+its source inline, and **golden tests lock every value** — edit a coefficient and the suite
+fails, forcing a reviewed conversation, because a silent change would rewrite every historical
+impact number the platform ever showed.
+
+Two honestly-labelled tiers of rigour, because conflating them is how a sustainability
+platform ends up in a greenwashing complaint:
+
+- **CO2e avoided** — the **US EPA WARM model**, the methodology regulators and auditors
+  accept. `rigour: MODELLED`. The CO2 factors are deliberately the _conservative_ end of the
+  WARM range, so the platform under-claims.
+- **Water, energy, trees** — widely-published paper-recycling figures with weaker primary
+  provenance. `rigour: ESTIMATE`, and every label says "estimated".
+- **Landfill diversion** — definitional (mass recycled = mass not landfilled). `rigour:
+MEASURED` — the one figure that needs no coefficient.
+
+Every response carries the `methodology` block and a `disclaimer`, and there is a test — a
+literal grep over the module source _and_ over the live HTTP response — asserting the words
+"carbon negative", "carbon neutral", "net zero" and "certified offset" never appear as claims.
+The brief said cap claims to what the methodology supports; that's enforced, not just intended.
+
+### What counts, and when
+
+Impact is only credited for paper a **mill has CONFIRMED receiving** — walked all the way down
+the Phase 5 chain of custody to a weighbridge confirmation. Paper we collected but that is
+still in the warehouse is not recycling that has _happened_, and claiming it would be counting
+credit we haven't earned. There's a test proving unconfirmed paper yields zero impact.
+
+The nightly job caches the **raw measured grams** (per user, month, paper type), not the
+derived impact — so the day a factor is re-verified against a new WARM version, every dashboard
+reflects it on the next read with no stale CO2 figures to invalidate. Same principle as
+deriving a wallet balance from its ledger. The domain calc is full-precision (rounding happens
+once, at the DTO edge), so per-user, per-org and per-platform totals reconcile exactly.
+
+Org dashboards (`apartments`, `businesses`) roll up over member users via a resolver that
+returns empty until **Phase 7** wires membership — so a business admin sees an honest "0 kg so
+far" rather than a 500, and the dashboards light up in Phase 7 with no change to this engine.
+
 ## Production readiness
 
 **This is a working, well-tested pilot build — not a production deployment.** The core loop
 (subscribe → deliver → pick up → weigh → pay → batch → recycle → trace) runs end to end, with
-249 unit and 136 e2e tests against real Postgres and Redis. But the build plan puts real
+261 unit and 141 e2e tests against real Postgres and Redis. But the build plan puts real
 production hardening in Phases 14–15 (observability, OWASP pass, load testing, k8s, secrets,
 CI/CD to a cluster), and this pass does **not** short-circuit those. What that means concretely:
 

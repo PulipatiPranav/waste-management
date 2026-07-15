@@ -77,6 +77,7 @@ model User {
   pickupRequests  PickupRequest[]
   withdrawals     WithdrawalRequest[]
   idempotencyKeys IdempotencyKey[]
+  impactMonthly   ImpactMonthly[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1197,4 +1198,48 @@ model BatchDispatch {
   @@index([status])
   @@index([discrepancyFlagged])
   @@map("batch_dispatches")
+}
+
+// ---------------------------------------------------------------------------
+// Sustainability impact (Phase 6)
+//
+// A CACHE of a query, refreshed nightly. Impact figures are read constantly (every
+// customer's dashboard, every business's ESG report) and written rarely, so scanning
+// pickup_items joined to confirmed batches on every request would be wasteful. This table
+// is that scan, materialised.
+//
+// It caches the RAW MEASURED QUANTITY — recycled grams per user, per month, per paper type —
+// NOT the derived impact numbers. The conversion factors live in code and may be re-verified
+// against a new WARM version; caching grams means a factor update is reflected immediately on
+// the next read, with no stale cached CO2 figures to invalidate. Same principle as caching
+// the wallet's ledger entries rather than a frozen balance.
+// ---------------------------------------------------------------------------
+
+model ImpactMonthly {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// The calendar month this recycling is attributed to, as `YYYY-MM`. Bucketed by the
+  /// pickup's completion date — when the customer handed the paper over — because that is the
+  /// month they relate to ("my July recycling"), even though the impact is only counted once
+  /// the mill CONFIRMS receipt.
+  yearMonth String
+
+  paperType PaperType
+
+  /// Confirmed-recycled weight: the collected weight of items whose batch a mill confirmed.
+  /// Grams, integer, like everywhere else.
+  recycledGrams Int @default(0)
+
+  /// When this row was last recomputed by the nightly job. Surfaced so a dashboard can say
+  /// "as of last night" honestly rather than implying real-time.
+  computedAt DateTime @default(now())
+
+  /// One row per user per month per paper type. The nightly job upserts on this key.
+  @@unique([userId, yearMonth, paperType])
+  @@index([userId])
+  @@index([yearMonth])
+  @@map("impact_monthly")
 }

@@ -163,6 +163,20 @@ export const envSchema = z.object({
    * the difference between those two is exactly what this threshold exists to draw.
    */
   WEIGHBRIDGE_TOLERANCE_PERCENT: z.coerce.number().min(0).max(100).default(5),
+
+  // --- Sustainability impact (Phase 6) --------------------------------------
+
+  /**
+   * Recomputes the impact cache. 05:00 — after batching (04:00), so it sees the day's freshly
+   * confirmed batches. Impact is read far more than it changes, so this runs nightly rather
+   * than on every dashboard load.
+   */
+  IMPACT_AGGREGATION_CRON: z.string().default('0 5 * * *'),
+
+  IMPACT_AGGREGATION_ENABLED: z
+    .string()
+    .default('true')
+    .transform((value) => value === 'true'),
 });
 
 /**
