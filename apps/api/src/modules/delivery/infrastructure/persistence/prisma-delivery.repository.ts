@@ -436,6 +436,24 @@ export class PrismaDeliveryRepository implements DeliveryRepository {
     return rows.map((row) => this.toRun(row));
   }
 
+  /**
+   * upsert on the run's natural key, so a pickup-only run created here and a delivery run
+   * the planner might create later for the same (date, partner, zone) are the SAME row —
+   * they merge instead of colliding on the unique index.
+   */
+  async createRunForPickups(runDate: Day, partnerId: string, zoneId: string): Promise<RunRecord> {
+    const row = await this.prisma.dailyDeliveryRun.upsert({
+      where: {
+        runDate_partnerId_zoneId: { runDate: runDate.toUtcDate(), partnerId, zoneId },
+      },
+      update: {},
+      create: { runDate: runDate.toUtcDate(), partnerId, zoneId },
+      include: { stops: { orderBy: { sequence: 'asc' } } },
+    });
+
+    return this.toRun(row);
+  }
+
   // --- Mapping --------------------------------------------------------------
 
   private toPartner(row: PartnerRow): DeliveryPartnerRecord {

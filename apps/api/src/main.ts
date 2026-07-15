@@ -8,6 +8,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { configureApp } from './bootstrap/configure-app';
 import { type Env } from './config/env.schema';
+import { RedisIoAdapter } from './shared/infrastructure/realtime/redis-io.adapter';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { bufferLogs: false });
@@ -19,6 +20,13 @@ async function bootstrap(): Promise<void> {
 
   // Lets Kubernetes drain in-flight requests before the process exits.
   app.enableShutdownHooks();
+
+  // WebSocket rooms must span replicas. socket.io's default adapter is in-process, so with
+  // two pods an event emitted on pod B never reaches an admin connected to pod A — the
+  // dashboard works perfectly on one replica and silently goes half-dead on two.
+  const ioAdapter = new RedisIoAdapter(app);
+  await ioAdapter.connect();
+  app.useWebSocketAdapter(ioAdapter);
 
   if (config.get('SWAGGER_ENABLED', { infer: true })) {
     const document = SwaggerModule.createDocument(

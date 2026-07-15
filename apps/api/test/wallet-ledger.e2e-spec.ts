@@ -131,7 +131,10 @@ describe('Wallet ledger (e2e, real Postgres)', () => {
 
     const entries = await prisma.walletTransaction.findMany({
       where: { walletId: walletRow.id },
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      // By `seq` — the commit order. Ordering by `createdAt` here was itself the bug: a
+      // transaction that starts earlier can commit later (it waits on the wallet lock), so
+      // timestamp order is not ledger order. See the ordering regression test below.
+      orderBy: { seq: 'asc' },
       select: { direction: true, amountPaise: true, balanceAfterPaise: true },
     });
 
@@ -361,6 +364,114 @@ describe('Wallet ledger (e2e, real Postgres)', () => {
       // No orphaned withdrawal request pointing at money that never left.
       expect(withdrawals).toHaveLength(0);
       expect(await balance()).toBe(before);
+    });
+  });
+
+  describe('ledger ORDERING (regression: a ledger must never be ordered by a timestamp)', () => {
+    /**
+     * The bug this guards against, which was real and shipped in Phase 4:
+     *
+     * `createdAt DEFAULT CURRENT_TIMESTAMP` is the TRANSACTION START time, frozen for the
+     * transaction's whole life. But a transaction that STARTS earlier can COMMIT later,
+     * because it waits on the wallet row lock. So a perfectly correct ledger can hold an
+     * entry with an earlier createdAt and a LATER balanceAfter.
+     *
+     * Replaying in timestamp order then reports a break in a sound ledger — and in other
+     * interleavings would hide a genuine lost update. A reconciliation tool that cries
+     * wolf is worse than none, because people stop trusting it and then ignore the real
+     * alarm.
+     *
+     * This test writes exactly that inversion (early timestamp, later sequence) and asserts
+     * that reconciliation follows `seq` and gets it right.
+     */
+    it('reconciles correctly when commit order is INVERTED relative to createdAt', async () => {
+      const walletRow = await prisma.wallet.upsert({
+        where: { userId },
+        update: {},
+        create: { userId },
+      });
+
+      const before = walletRow.balancePaise;
+
+      // Entry ONE in commit order (lower seq), but written with a LATE timestamp — as if its
+      // transaction had started last while winning the lock first.
+      const first = await prisma.walletTransaction.create({
+        data: {
+          walletId: walletRow.id,
+          type: 'ADJUSTMENT',
+          direction: 'CREDIT',
+          amountPaise: 50n,
+          balanceAfterPaise: before + 50n,
+          note: 'ordering regression: committed first, late timestamp',
+        },
+      });
+
+      // Entry TWO in commit order (higher seq), written with an EARLY timestamp — the
+      // transaction that began first but waited on the lock.
+      const second = await prisma.walletTransaction.create({
+        data: {
+          walletId: walletRow.id,
+          type: 'ADJUSTMENT',
+          direction: 'CREDIT',
+          amountPaise: 100n,
+          balanceAfterPaise: before + 150n,
+          note: 'ordering regression: committed second, early timestamp',
+        },
+      });
+
+      // Force the inversion in the timestamps. (The ledger is append-only, so this has to
+      // go around the trigger — which is itself a reminder that production has no such
+      // escape hatch.)
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "wallet_transactions" DISABLE TRIGGER "wallet_transactions_no_update"',
+      );
+      await prisma.$executeRawUnsafe(
+        `UPDATE "wallet_transactions" SET "createdAt" = '2030-01-01T00:00:10Z' WHERE id = '${first.id}'`,
+      );
+      await prisma.$executeRawUnsafe(
+        `UPDATE "wallet_transactions" SET "createdAt" = '2030-01-01T00:00:00Z' WHERE id = '${second.id}'`,
+      );
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "wallet_transactions" ENABLE TRIGGER "wallet_transactions_no_update"',
+      );
+
+      await prisma.wallet.update({
+        where: { id: walletRow.id },
+        data: { balancePaise: before + 150n },
+      });
+
+      // seq order is commit order: +50 -> 50, then +100 -> 150. Reconciles.
+      const bySeq = await wallet.allTransactionsForReconciliation(walletRow.id);
+      expect(reconcile(bySeq, before + 150n).ok).toBe(true);
+
+      // And prove the test has teeth: the OLD behaviour (timestamp order) breaks on this
+      // very same, entirely correct, ledger.
+      const byCreatedAt = await prisma.walletTransaction.findMany({
+        where: { walletId: walletRow.id },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        select: { direction: true, amountPaise: true, balanceAfterPaise: true },
+      });
+
+      expect(reconcile(byCreatedAt, before + 150n).ok).toBe(false);
+    });
+
+    it('assigns a strictly increasing seq in commit order', async () => {
+      const pickups = await Promise.all(Array.from({ length: 5 }, () => makePickup()));
+      await Promise.all(pickups.map((pickup) => complete(pickup.id, 1000)));
+
+      const walletRow = await prisma.wallet.findUniqueOrThrow({ where: { userId } });
+
+      const entries = await prisma.walletTransaction.findMany({
+        where: { walletId: walletRow.id },
+        orderBy: { seq: 'asc' },
+        select: { seq: true, balanceAfterPaise: true },
+      });
+
+      // Every balanceAfter is >= the previous one's, in seq order, for a ledger of credits.
+      // That is only true if seq really does track commit order.
+      for (let index = 1; index < entries.length; index += 1) {
+        expect(entries[index]!.seq > entries[index - 1]!.seq).toBe(true);
+      }
     });
   });
 

@@ -480,6 +480,7 @@ model DeliveryZone {
 
   partners DeliveryPartnerZone[]
   runs     DailyDeliveryRun[]
+  batches  CollectionBatch[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -781,8 +782,21 @@ model PickupItem {
 
   createdAt DateTime @default(now())
 
+  /// THE chain-of-custody link. Null until the batching job claims this item.
+  ///
+  /// An explicit FK, not an inferred join on (zone, paperType, date). Phase 6's
+  /// environmental claims are only as credible as this column: "we recycled 40 tonnes" has
+  /// to be answerable as a query that walks
+  /// PickupItem -> CollectionBatch -> BatchDispatch -> RecyclingPartner, and an inferred
+  /// link cannot survive an auditor asking "show me which mill THIS customer's newspapers
+  /// went to".
+  batchId String?          @db.Uuid
+  batch   CollectionBatch? @relation(fields: [batchId], references: [id], onDelete: Restrict)
+
   /// One line per paper type per pickup. Two NEWSPAPER lines would double-count.
   @@unique([pickupId, paperType])
+  /// Serves the batching job's scan for unbatched items, and the traceability query.
+  @@index([batchId])
   @@map("pickup_items")
 }
 
@@ -837,6 +851,21 @@ enum WalletTxnDirection {
 model WalletTransaction {
   id String @id @default(uuid()) @db.Uuid
 
+  /// THE ORDER OF THE LEDGER. Not `createdAt`.
+  ///
+  /// A monotonic sequence, assigned by Postgres at INSERT — which happens while the
+  /// wallet row lock is held, so per wallet the sequence order IS the commit order.
+  ///
+  /// `createdAt` cannot do this job, and the reason is subtle enough to be worth
+  /// spelling out: `DEFAULT CURRENT_TIMESTAMP` is the TRANSACTION START time, frozen for
+  /// the transaction's whole life. But a transaction that starts earlier can commit later
+  /// — it waits on the wallet lock. So a correct ledger can have an entry with an earlier
+  /// `createdAt` and a LATER `balanceAfter`, and replaying it in timestamp order reports a
+  /// break in a perfectly sound ledger (and, in other interleavings, hides a real one).
+  /// A reconciliation tool that cries wolf is worse than none, because you stop trusting
+  /// it. There is a regression test that forces exactly this inversion.
+  seq BigInt @unique @default(autoincrement())
+
   walletId String @db.Uuid
   wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
 
@@ -873,7 +902,8 @@ model WalletTransaction {
 
   // NOTE: no updatedAt. There is no update. See the trigger.
 
-  @@index([walletId, createdAt])
+  /// Every ledger read orders by `seq`, so this is the index that serves them.
+  @@index([walletId, seq])
   @@index([type])
   @@map("wallet_transactions")
 }
@@ -916,13 +946,13 @@ model WithdrawalRequest {
   bankIfsc         String
   accountHolder    String
 
-  reviewedByUserId String? @db.Uuid
+  reviewedByUserId String?   @db.Uuid
   reviewedAt       DateTime?
   rejectionReason  String?
 
   /// Set when a human confirms the transfer left the bank.
-  paidAt        DateTime?
-  paymentRef    String?
+  paidAt     DateTime?
+  paymentRef String?
 
   transactions WalletTransaction[]
 
@@ -969,4 +999,202 @@ model IdempotencyKey {
   @@unique([userId, key, endpoint])
   @@index([createdAt])
   @@map("idempotency_keys")
+}
+
+// ---------------------------------------------------------------------------
+// Recycling partners & chain of custody (Phase 5)
+//
+// The FK chain is the product:
+//
+//   PickupItem -> CollectionBatch -> BatchDispatch -> RecyclingPartner confirmation
+//
+// Every gram a customer hands over must be traceable, forwards and backwards, along that
+// chain. It is made of explicit foreign keys and explicit status enums — never inferred
+// from a timestamp or a join on a name — because Phase 6's environmental claims are only
+// as credible as this chain. "We recycled 40 tonnes" is a number an ESG auditor will ask
+// you to substantiate, and the answer has to be a query, not an assertion.
+// ---------------------------------------------------------------------------
+
+enum RecyclingPartnerStatus {
+  /// Onboarded, not yet verified. Never receives a dispatch.
+  PENDING
+  VERIFIED
+  /// Failed verification, or offboarded. Keeps its history; receives nothing new.
+  SUSPENDED
+}
+
+/// A mill or recycler that takes the collected paper.
+model RecyclingPartner {
+  id   String @id @default(uuid()) @db.Uuid
+  name String @unique
+
+  status RecyclingPartnerStatus @default(PENDING)
+
+  /// Which paper types this mill actually accepts. A cardboard-only recycler must never be
+  /// sent a batch of magazines — the truck arrives and is turned away.
+  acceptedPaperTypes PaperType[]
+
+  /// Daily intake ceiling, in grams. Advisory in this phase (the batching job warns rather
+  /// than refuses), because a mill that is briefly over capacity still takes the load —
+  /// but it is recorded so Phase 6 can plan against it.
+  dailyCapacityGrams Int
+
+  city    String
+  state   String
+  pincode String
+
+  /// For the transporter, and for the audit trail. Not a formatted address: a mill is a
+  /// gate on a road, and the driver needs what the driver needs.
+  addressLine String
+
+  /// Business identifiers. Stored because an ESG auditor will ask who received the paper,
+  /// and "a recycler in Bengaluru" is not an answer.
+  gstin            String?
+  pollutionBoardId String?
+
+  contactName  String
+  contactPhone String
+
+  verifiedAt       DateTime?
+  verifiedByUserId String?   @db.Uuid
+
+  dispatches BatchDispatch[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([city])
+  @@map("recycling_partners")
+}
+
+enum BatchStatus {
+  /// Accumulating pickups. Items can still join.
+  OPEN
+  /// Closed and ready to go. No more items; nothing dispatched yet.
+  READY
+  /// Handed to a transporter. See BatchDispatch.
+  DISPATCHED
+  /// The mill confirmed receipt at their weighbridge. Terminal.
+  CONFIRMED
+}
+
+/// Paper of ONE type, from ONE zone, aggregated for transport to a mill.
+///
+/// Grouped by (zone, paperType) because that is what a mill buys: a truck of mixed
+/// cardboard and newsprint is two products in one load, and the mill weighs and prices them
+/// separately anyway. Grouping is deliberately simple — nearest-mill routing, load
+/// consolidation across zones, and capacity-aware packing are all real optimisations and
+/// none of them are built here. Say so out loud rather than pretending otherwise.
+model CollectionBatch {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Human-readable, for the paperwork a driver physically carries.
+  reference String @unique
+
+  zoneId String       @db.Uuid
+  zone   DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+
+  paperType PaperType
+
+  status BatchStatus @default(OPEN)
+
+  /// The sum of its items' weights, in grams, as WE weighed them at customers' doors.
+  ///
+  /// Denormalised so a batch can be read without summing its items, but it is a CACHE of
+  /// exactly that sum — the same relationship the wallet balance has to the ledger. It is
+  /// recomputed inside the transaction that adds items, never adjusted by hand.
+  ///
+  /// This is the number the weighbridge is compared against. It is NEVER overwritten by
+  /// what the mill reports: a discrepancy is recorded as a discrepancy, because the moment
+  /// you overwrite your own measurement with the counterparty's, you have destroyed the
+  /// evidence that there was a difference at all.
+  collectedWeightGrams Int @default(0)
+
+  itemCount Int @default(0)
+
+  items    PickupItem[]
+  dispatch BatchDispatch?
+
+  closedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// At most one OPEN batch per (zone, paperType) — enforced by a partial unique index in
+  /// the migration. Two open batches for the same paper in the same zone would split a
+  /// load arbitrarily depending on which row a query returned first.
+  @@index([zoneId, paperType, status])
+  @@index([status])
+  @@map("collection_batches")
+}
+
+enum DispatchStatus {
+  /// On a truck. Weight at destination not yet known.
+  IN_TRANSIT
+  /// The mill weighed it and confirmed. Terminal.
+  CONFIRMED
+  /// The mill refused the load (wrong paper type, contamination, capacity).
+  REJECTED
+}
+
+/// The handoff: one batch, one truck, one mill.
+model BatchDispatch {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// One dispatch per batch. A batch that has been sent cannot be sent again.
+  batchId String          @unique @db.Uuid
+  batch   CollectionBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+
+  partnerId String           @db.Uuid
+  partner   RecyclingPartner @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+
+  status DispatchStatus @default(IN_TRANSIT)
+
+  dispatchedAt DateTime @default(now())
+
+  /// Who physically moved it. An ESG auditor asks; "a truck" is not an answer.
+  transporterName      String
+  transporterVehicleNo String
+  transporterContact   String
+
+  /// What the MILL's weighbridge said, in grams. Null until they confirm.
+  ///
+  /// Recorded ALONGSIDE the batch's collectedWeightGrams, never on top of it. Both numbers
+  /// are real measurements taken by different parties with different instruments, and the
+  /// gap between them is itself the finding — spillage, moisture loss, a mis-keyed figure,
+  /// or theft. Overwrite one with the other and you have thrown away the only evidence that
+  /// anything happened.
+  confirmedWeightGrams Int?
+
+  /// confirmedWeightGrams - collectedWeightGrams. Negative = the mill received LESS than we
+  /// sent (the usual direction: moisture and spillage).
+  ///
+  /// Stored rather than derived, so it is indexable and a report can ask "show me every
+  /// dispatch that lost more than 10%" without recomputing across the whole table.
+  discrepancyGrams Int?
+
+  /// Signed, in basis points of the collected weight (-250 = the load arrived 2.5% light).
+  /// Basis points rather than a float percentage, for the same reason money is in paise.
+  discrepancyBps Int?
+
+  /// True when the gap exceeds WEIGHBRIDGE_TOLERANCE_PERCENT. A few percent is physics; a
+  /// large gap is an incident and a human needs to look at it.
+  discrepancyFlagged Boolean @default(false)
+
+  confirmedAt       DateTime?
+  confirmedByUserId String?   @db.Uuid
+
+  rejectionReason String?
+
+  /// The mill's own docket number. The physical paper trail behind the digital one.
+  weighbridgeSlipRef String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([partnerId, dispatchedAt])
+  @@index([status])
+  @@index([discrepancyFlagged])
+  @@map("batch_dispatches")
 }

@@ -5,6 +5,7 @@ import helmet from 'helmet';
 
 import { type Env } from '@/config/env.schema';
 import { AllExceptionsFilter } from '@/shared/presentation/filters/all-exceptions.filter';
+import { installBigIntSerialization } from './bigint-serialization';
 
 /**
  * Everything that turns a bare Nest app into *our* app.
@@ -17,6 +18,11 @@ import { AllExceptionsFilter } from '@/shared/presentation/filters/all-exception
  */
 export function configureApp(app: INestApplication): INestApplication {
   const config = app.get<ConfigService<Env, true>>(ConfigService);
+
+  // A BigInt reaching a response body would otherwise throw at JSON.stringify and become a
+  // 500. Every money column in this system is a BigInt. See the file for why it serialises
+  // as a string rather than a number.
+  installBigIntSerialization();
 
   // Behind an ingress/load balancer, the socket's peer address is the proxy's, not the
   // client's. Without this, `request.ip` is the same value for EVERY request, so the

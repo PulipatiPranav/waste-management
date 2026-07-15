@@ -115,6 +115,54 @@ export const envSchema = z.object({
     .string()
     .default('true')
     .transform((value) => value === 'true'),
+
+  // --- Wallet maintenance (Phase 5 hardening) -------------------------------
+
+  /**
+   * Replays every wallet's ledger and alerts on a mismatch.
+   *
+   * 02:00 by default — quiet, and any overnight discrepancy is on someone's desk before
+   * the morning delivery round. Nobody thinks to ask about the wallet that is quietly
+   * wrong, so something has to ask on their behalf.
+   */
+  WALLET_RECONCILE_CRON: z.string().default('0 2 * * *'),
+
+  WALLET_MAINTENANCE_ENABLED: z
+    .string()
+    .default('true')
+    .transform((value) => value === 'true'),
+
+  /**
+   * How long an idempotency key is kept. Must comfortably exceed how long any client will
+   * keep retrying; a delivery partner's phone gives up long before 24h.
+   */
+  IDEMPOTENCY_RETENTION_HOURS: z.coerce.number().int().positive().default(24),
+
+  // --- Recycling & batching (Phase 5) ---------------------------------------
+
+  /** Groups completed pickups into collection batches, ready for dispatch to a mill. */
+  BATCHING_CRON: z.string().default('0 4 * * *'),
+
+  BATCHING_ENABLED: z
+    .string()
+    .default('true')
+    .transform((value) => value === 'true'),
+
+  /**
+   * A batch is not worth dispatching below this. A truck to a mill costs the same whether
+   * it carries 50 kg or 500 kg, so tiny batches destroy the unit economics of the whole
+   * circular model — and the paper keeps just as well in the warehouse.
+   */
+  BATCH_MIN_WEIGHT_GRAMS: z.coerce.number().int().positive().default(50_000), // 50 kg
+
+  /**
+   * Weighbridge variance we accept without flagging.
+   *
+   * Paper genuinely loses moisture in transit, and a weighbridge has its own tolerance. A
+   * few percent is physics; a large gap is spillage, theft, or a mis-keyed number — and
+   * the difference between those two is exactly what this threshold exists to draw.
+   */
+  WEIGHBRIDGE_TOLERANCE_PERCENT: z.coerce.number().min(0).max(100).default(5),
 });
 
 /**

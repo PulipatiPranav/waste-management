@@ -12,6 +12,8 @@ export interface PickupAssignmentResult {
   date: Day;
   assigned: number;
   unassigned: { pickupId: string; pincode: string; reason: 'NO_RUN_IN_ZONE' }[];
+  /** Runs created for zones that had pickups but no delivery round that day. */
+  pickupOnlyRunsCreated: number;
 }
 
 /**
@@ -39,15 +41,23 @@ export class AssignPickupsToRunsUseCase {
   async execute(on?: Day): Promise<PickupAssignmentResult> {
     const date = on ?? Day.fromUtcDate(this.clock.now()).addDays(1);
 
-    const [pending, zones, runs] = await Promise.all([
+    const [pending, zones, runs, partners] = await Promise.all([
       this.pickups.listUnassignedForDate(date),
       this.delivery.loadPlannableZones(),
       this.delivery.listRunsForDate(date),
+      this.delivery.loadPlannablePartners(),
     ]);
 
     if (pending.length === 0) {
-      return { date, assigned: 0, unassigned: [] };
+      return { date, assigned: 0, unassigned: [], pickupOnlyRunsCreated: 0 };
     }
+
+    // Same eligibility bar the delivery planner uses: active, available, KYC-verified. A
+    // pickup-only run must not hand a customer's address to an unvetted partner any more
+    // than a delivery run would.
+    const eligiblePartners = partners.filter(
+      (partner) => partner.isActive && partner.isAvailable && partner.kycStatus === 'VERIFIED',
+    );
 
     // Which runs cover which zone. A zone can have several runs (several partners); the
     // pickup goes to the least-loaded, so one partner does not end up carrying every
@@ -64,6 +74,48 @@ export class AssignPickupsToRunsUseCase {
 
     const assignments: { pickupId: string; runId: string; partnerId: string }[] = [];
     const unassigned: PickupAssignmentResult['unassigned'] = [];
+    let pickupOnlyRunsCreated = 0;
+
+    /**
+     * A zone with pickups but NO delivery run gets a pickup-only run.
+     *
+     * Pickups ride along with the delivery round because the partner is already on that
+     * street — but "along with" cannot mean "only if". A customer who recycles without
+     * subscribing to a newspaper, or a zone where nothing happens to be due today, would
+     * otherwise have their pickup stranded every single day: they bundle up their paper,
+     * nobody comes, and the only trace is a line in a log.
+     *
+     * So the run is created. It costs a trip that the delivery round would otherwise have
+     * subsidised, which is worth knowing — but not collecting from a customer who asked is
+     * not a saving, it is a broken promise.
+     */
+    const ensureRunForZone = async (
+      zoneId: string,
+    ): Promise<{ id: string; partnerId: string }[]> => {
+      const existing = runsByZone.get(zoneId);
+      if (existing !== undefined && existing.length > 0) return existing;
+
+      const partner = eligiblePartners
+        .filter((candidate) => candidate.zoneIds.includes(zoneId))
+        .sort((a, b) => a.id.localeCompare(b.id))[0];
+
+      // No eligible partner works this zone at all. Nothing to create a run for.
+      if (partner === undefined) return [];
+
+      const run = await this.delivery.createRunForPickups(date, partner.id, zoneId);
+      pickupOnlyRunsCreated += 1;
+
+      const created = [{ id: run.id, partnerId: run.partnerId }];
+      runsByZone.set(zoneId, created);
+      pickupLoad.set(run.id, 0);
+
+      this.logger.log(
+        `Zone ${zoneId} had pickups but no delivery run for ${date.toString()}; created a ` +
+          `pickup-only run for partner ${partner.id}.`,
+      );
+
+      return created;
+    };
 
     // Deterministic order, like the delivery planner: same inputs, same plan, so a
     // complaint can be reproduced.
@@ -72,12 +124,19 @@ export class AssignPickupsToRunsUseCase {
         .filter((candidate) => candidate.isActive && candidate.pincodes.includes(pickup.pincode))
         .sort((a, b) => a.id.localeCompare(b.id))[0];
 
-      const candidates = zone === undefined ? undefined : runsByZone.get(zone.id);
+      if (zone === undefined) {
+        // No active zone covers this pincode at all. Ops has to extend a zone; there is
+        // nobody to create a run for. Reported, never silently dropped.
+        unassigned.push({ pickupId: pickup.id, pincode: pickup.pincode, reason: 'NO_RUN_IN_ZONE' });
+        continue;
+      }
 
-      if (candidates === undefined || candidates.length === 0) {
-        // No run covers this pincode today: either no zone has it, or the zone has no
-        // available partner. Reported, never silently dropped — the customer has bundled
-        // up their newspapers and is waiting at home.
+      // A zone with pickups but no delivery run gets a pickup-only run created here.
+      const candidates = await ensureRunForZone(zone.id);
+
+      if (candidates.length === 0) {
+        // The zone exists but has no active, KYC-verified partner working it. Nobody to
+        // create a run for. Still reported rather than dropped.
         unassigned.push({ pickupId: pickup.id, pincode: pickup.pincode, reason: 'NO_RUN_IN_ZONE' });
         continue;
       }
@@ -96,7 +155,12 @@ export class AssignPickupsToRunsUseCase {
 
     const assigned = await this.pickups.assignToRun(assignments);
 
-    this.logger.log(`Assigned ${assigned} pickup(s) to runs for ${date.toString()}`);
+    this.logger.log(
+      `Assigned ${assigned} pickup(s) to runs for ${date.toString()}` +
+        (pickupOnlyRunsCreated > 0
+          ? ` (${pickupOnlyRunsCreated} pickup-only run(s) created for zones with no delivery round)`
+          : ''),
+    );
 
     if (unassigned.length > 0) {
       this.logger.error(
@@ -106,6 +170,6 @@ export class AssignPickupsToRunsUseCase {
       );
     }
 
-    return { date, assigned, unassigned };
+    return { date, assigned, unassigned, pickupOnlyRunsCreated };
   }
 }

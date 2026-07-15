@@ -8,6 +8,7 @@ import { CatalogModule } from './modules/catalog/catalog.module';
 import { DeliveryModule } from './modules/delivery/delivery.module';
 import { HealthModule } from './modules/health/health.module';
 import { PickupsModule } from './modules/pickups/pickups.module';
+import { RecyclingModule } from './modules/recycling/recycling.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { UsersModule } from './modules/users/users.module';
 import { WalletModule } from './modules/wallet/wallet.module';
@@ -37,6 +38,7 @@ import { CorrelationIdMiddleware } from './shared/presentation/middleware/correl
     DeliveryModule,
     WalletModule,
     PickupsModule,
+    RecyclingModule,
     HealthModule,
   ],
   providers: [

@@ -3,11 +3,14 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 4 — pickup, digital weighing, wallet & cashback.** The circular loop is
-> closed: a customer's paper is collected on the delivery round, weighed at the door, and
-> paid into an append-only wallet ledger. No recycling-partner handoff or marketplace yet.
+> **Status: Phase 5 — recycling partners & chain of custody.** The loop reaches the mill:
+> collected paper is batched by zone and paper type, dispatched to a verified recycler, and
+> reconciled against their weighbridge. Every gram is traceable end to end. No sustainability
+> reporting or marketplace yet.
 >
 > ⚠️ **Read [Regulatory: the wallet is not a licensed instrument](#regulatory-the-wallet-is-not-a-licensed-instrument) before piloting with real money.**
+>
+> 📋 **[Production readiness](#production-readiness) — what is and is not ready to deploy.**
 
 ---
 
@@ -565,6 +568,111 @@ customer could request their full balance twice — or spend it in the Phase 8 m
 with a payout pending — and one of those two promises would have to be broken. A rejection
 appends a **reversal CREDIT**; the original debit is never erased, and the customer's
 statement shows both.
+
+## Recycling & chain of custody (Phase 5)
+
+```
+POST /api/v1/admin/recycling/partners                    ops: onboard a mill (starts PENDING)
+PATCH /api/v1/admin/recycling/partners/:id               ops: verify / suspend
+POST /api/v1/admin/recycling/batches/run                 ops: force a batching run (idempotent)
+POST /api/v1/admin/recycling/batches/:id/close           ops: OPEN -> READY, fixes the weight
+POST /api/v1/admin/recycling/batches/:id/dispatch        ops: put it on a truck to a mill
+POST /api/v1/admin/recycling/dispatches/:id/confirm      ops: record the mill's weighbridge reading
+POST /api/v1/admin/recycling/dispatches/:id/reject       ops: the mill refused the load
+GET  /api/v1/admin/recycling/dispatches/flagged          ops: the discrepancy incident queue
+GET  /api/v1/admin/recycling/batches/:id/chain-of-custody  the full forward trace
+GET  /api/v1/admin/recycling/customers/:id/trace           where did THIS customer's paper go
+```
+
+A **nightly job** (`BATCHING_CRON`, 04:00) sweeps completed pickups into collection batches,
+grouped by `(zone, paperType)` — a mill buys newsprint and cardboard as separate products and
+weighs them separately, so a truck of both is two loads sharing a chassis. Grouping is
+deliberately simple: no nearest-mill routing, no load consolidation, no capacity-aware
+packing. Those are real optimisations that can't be designed before real mills quote real
+prices for real load sizes, and inventing constraints now would be worse than leaving them.
+
+### The chain of custody is an explicit FK chain
+
+```
+PickupItem → CollectionBatch → BatchDispatch → RecyclingPartner
+```
+
+Every link is a real foreign key, never an inferred join on dates and zones. This is what an
+ESG auditor is actually asking for behind "substantiate that tonnage": every gram attributed
+to the customer who handed it over, the partner who collected it, the truck it rode on, and
+the mill that weighed it at the far end. `chain-of-custody` walks it forwards; `trace` walks
+it back from a customer. Phase 6's environmental claims are only as credible as this chain,
+so it is made of columns you can query, not assertions you have to trust.
+
+`chain-of-custody` also returns `itemsReconcile`: the batch's cached weight must equal the sum
+of its items, the same relationship the wallet balance has to its ledger. If it's ever false,
+no ESG number built on that batch is defensible.
+
+### Discrepancy: record both weights, overwrite neither
+
+Two real measurements — what we weighed at the door, what the mill weighed at the gate — taken
+by different parties, with different instruments, hours apart. They will not agree, and that's
+not a bug: paper loses moisture in transit, some spills, a weighbridge has its own tolerance.
+
+The system records the mill's reading **alongside** our collected weight, never on top of it.
+The gap between them _is_ the finding. Overwrite one with the other and you've destroyed the
+only evidence that anything happened — and with it any chance of noticing that one
+transporter's loads always arrive 12% light. A gap within `WEIGHBRIDGE_TOLERANCE_PERCENT` is
+physics; beyond it is an incident that lands on the flagged queue and in an ERROR log. The
+discrepancy is stored in signed **basis points** (integers), for the same reason money is in
+paise: it gets compared to a threshold and shown to a mill in a commercial dispute, and a
+float that renders as 2.4999998% in one report and 2.5% in another is an argument nobody wants.
+
+Verified mills only — the same KYC bar as delivery partners. An unverified mill is a stranger
+you'd be handing tonnes of a customer's property to.
+
+## Production readiness
+
+**This is a working, well-tested pilot build — not a production deployment.** The core loop
+(subscribe → deliver → pick up → weigh → pay → batch → recycle → trace) runs end to end, with
+249 unit and 136 e2e tests against real Postgres and Redis. But the build plan puts real
+production hardening in Phases 14–15 (observability, OWASP pass, load testing, k8s, secrets,
+CI/CD to a cluster), and this pass does **not** short-circuit those. What that means concretely:
+
+**Ready:**
+
+- The money path is defended in depth: an append-only ledger enforced by a DB trigger, row
+  locks against lost updates, a monotonic sequence so reconciliation is trustworthy, and
+  three independent guards against double-crediting a pickup.
+- Every destructive/financial operation is transactional and idempotent where it needs to be.
+- Nightly reconciliation replays every wallet's ledger and alerts on any mismatch.
+- Multi-replica correctness: rate limits, the throttler, and now WebSocket events are all
+  Redis-backed, so nothing silently breaks when you scale past one pod.
+- The env schema refuses to boot in production with dev-only providers (console SMS, local
+  disk storage) or Swagger enabled.
+
+**NOT ready — do this before real users or real money:**
+
+- **No observability.** No tracing, no metrics endpoint, no error reporting (Sentry), no
+  structured request logging with correlation IDs threaded through. When something breaks at
+  2am you will be reading raw logs. → **Phase 14.**
+- **No security audit.** Nobody has run the OWASP API Top 10 against these endpoints, load-
+  tested the wallet-credit path, or checked every file upload and raw query. → **Phase 14.**
+- **No deployment.** No k8s manifests, no autoscaling, no managed secrets, no CI/CD to a
+  cluster, no runbook. Secrets today live in `.env` files. → **Phase 15.**
+- **RBI PPI / DPDP / gig-worker classification** are unresolved legal questions (see below and
+  the Phase 16 checklist). None are engineering problems; all can block a public launch.
+- **A real SMS provider and real S3-compatible storage** must replace the dev stubs.
+- **The nightly jobs run on every replica.** With more than one pod you'll plan/batch/reconcile
+  N times. Harmless (all idempotent) but wasteful — gate them to one worker in Phase 15.
+
+Treat this as ready for a **controlled pilot** (one apartment complex, one recycler, staff
+watching) — not an open launch.
+
+## Known gaps (Phase 5)
+
+- **Route/load optimisation is not built** — batching groups by zone and paper type and stops
+  there. Documented future enhancement, not an oversight.
+- **Capacity limits are advisory** — dispatching over a mill's stated daily capacity warns but
+  does not refuse, because a mill briefly over its ceiling will usually still take the load.
+- **A pickup in a zone with no delivery round that day now gets a pickup-only run** (fixed this
+  phase — a recycle-only customer was previously stranded). It costs a trip the delivery round
+  would otherwise subsidise; that trade is logged.
 
 ## Known gaps (Phase 4)
 

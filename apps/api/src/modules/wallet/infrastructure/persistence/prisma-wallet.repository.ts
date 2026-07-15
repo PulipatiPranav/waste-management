@@ -132,7 +132,8 @@ export class PrismaWalletRepository implements WalletRepository {
   async listTransactions(walletId: string, limit: number): Promise<LedgerRow[]> {
     const rows = await this.prisma.walletTransaction.findMany({
       where: { walletId },
-      orderBy: { createdAt: 'desc' },
+      // By `seq`, never by `createdAt` — see the note on the column. Newest first here.
+      orderBy: { seq: 'desc' },
       take: limit,
     });
 
@@ -144,9 +145,14 @@ export class PrismaWalletRepository implements WalletRepository {
   ): Promise<Pick<LedgerRow, 'direction' | 'amountPaise' | 'balanceAfterPaise'>[]> {
     const rows = await this.prisma.walletTransaction.findMany({
       where: { walletId },
-      // Oldest first, and `id` breaks ties: two entries can share a createdAt to the
-      // millisecond, and replaying them in the wrong order would report a phantom break.
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      // THE ordering that makes reconciliation trustworthy: `seq` is assigned at INSERT,
+      // under the wallet row lock, so per wallet it is the true commit order.
+      //
+      // Ordering by `createdAt` here was a real bug: it is the TRANSACTION START time, and
+      // a transaction that starts earlier can commit later (it waits on the lock). Replay
+      // in timestamp order then reports a break in a perfectly correct ledger — or hides a
+      // real one. See the regression test in wallet-ledger.e2e-spec.ts.
+      orderBy: { seq: 'asc' },
       select: { direction: true, amountPaise: true, balanceAfterPaise: true },
     });
 

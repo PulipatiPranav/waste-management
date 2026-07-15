@@ -153,6 +153,17 @@ export interface DeliveryRepository {
 
   /** Runs planned for a date, so pickups can be slotted into them. */
   listRunsForDate(runDate: Day): Promise<RunRecord[]>;
+
+  /**
+   * Creates (or returns the existing) run for a partner + zone + date, so a pickup in a
+   * zone with NO delivery round that day still has a run to ride.
+   *
+   * "Rides along with the delivery round" is the economics, but it cannot mean "only if
+   * there is one": a customer who recycles without a newspaper subscription would otherwise
+   * be stranded every day. Idempotent via the same `@@unique([runDate, partnerId, zoneId])`
+   * the planner relies on.
+   */
+  createRunForPickups(runDate: Day, partnerId: string, zoneId: string): Promise<RunRecord>;
 }
 
 export const DELIVERY_REPOSITORY = Symbol('DELIVERY_REPOSITORY');
