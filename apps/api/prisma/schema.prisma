@@ -78,6 +78,7 @@ model User {
   withdrawals     WithdrawalRequest[]
   idempotencyKeys IdempotencyKey[]
   impactMonthly   ImpactMonthly[]
+  orgMemberships  OrgMember[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -95,7 +96,10 @@ model Apartment {
   name     String
   verified Boolean @default(false)
 
-  addresses Address[]
+  addresses      Address[]
+  members        OrgMember[]
+  contracts      OrgContract[]
+  pickupRequests PickupRequest[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -108,7 +112,10 @@ model Business {
   name     String
   verified Boolean @default(false)
 
-  addresses Address[]
+  addresses      Address[]
+  members        OrgMember[]
+  contracts      OrgContract[]
+  pickupRequests PickupRequest[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -709,6 +716,15 @@ model PickupRequest {
   addressId String  @db.Uuid
   address   Address @relation(fields: [addressId], references: [id], onDelete: Restrict)
 
+  /// Org attribution. Set when an org admin requests a COMMON-AREA pickup on behalf of an
+  /// apartment or business; null for an individual resident's own pickup. `userId` above is
+  /// always the human who requested it (the admin, for a common-area pickup); this says which
+  /// org it belongs to, for org-level reporting and billing.
+  apartmentId String?    @db.Uuid
+  apartment   Apartment? @relation(fields: [apartmentId], references: [id], onDelete: Restrict)
+  businessId  String?    @db.Uuid
+  business    Business?  @relation(fields: [businessId], references: [id], onDelete: Restrict)
+
   /// Date-only, like every other calendar concept here. See the Day value object.
   scheduledDate DateTime @db.Date
 
@@ -1242,4 +1258,167 @@ model ImpactMonthly {
   @@index([userId])
   @@index([yearMonth])
   @@map("impact_monthly")
+}
+
+// ---------------------------------------------------------------------------
+// Organisational accounts (Phase 7)
+//
+// Apartments and businesses become multi-user tenants. The overriding rule of this whole
+// module is TENANT ISOLATION: an APARTMENT_ADMIN or BUSINESS_ADMIN sees and touches only
+// their own org's data, and that is enforced at the QUERY layer — every org query is
+// scoped by an org id the caller has been proven to administer — not merely hidden in the
+// UI. A UI-only check is one forgotten `where` clause away from one business reading
+// another's ESG numbers and member list.
+// ---------------------------------------------------------------------------
+
+enum OrgKind {
+  APARTMENT
+  BUSINESS
+}
+
+enum OrgRole {
+  /// Can manage the org: members, common-area pickups, contracts, ESG reports.
+  ADMIN
+  /// A resident/employee. Their personal recycling rolls up into the org's impact.
+  MEMBER
+}
+
+/// Links a user to exactly one organisation, with a role inside it.
+///
+/// A user's GLOBAL role (APARTMENT_ADMIN / BUSINESS_ADMIN, from Phase 1) is the coarse
+/// capability — "this person may administer some apartment". THIS row says WHICH org and
+/// whether they are its admin. Authorisation needs both: the global role gets you to the
+/// door, the membership row says which rooms are yours. Checking only the global role would
+/// let any APARTMENT_ADMIN administer EVERY apartment.
+model OrgMember {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  orgKind OrgKind
+  orgRole OrgRole @default(MEMBER)
+
+  /// Exactly one is set, matching orgKind. Enforced by a check constraint in the migration.
+  apartmentId String?    @db.Uuid
+  apartment   Apartment? @relation(fields: [apartmentId], references: [id], onDelete: Cascade)
+  businessId  String?    @db.Uuid
+  business    Business?  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// A user belongs to a given org at most once. Partial unique indexes per org column are
+  /// added in the migration (a plain @@unique across two nullable columns would treat every
+  /// null-apartment row as distinct and let a user join the same business twice).
+  @@index([apartmentId])
+  @@index([businessId])
+  @@index([userId])
+  @@map("org_members")
+}
+
+enum ContractType {
+  /// A fixed fee per billing period regardless of volume.
+  FLAT_MONTHLY
+  /// Paid per kilogram of paper collected. The invoice reads the confirmed-recycled weight.
+  PER_KG
+}
+
+enum ContractStatus {
+  ACTIVE
+  ENDED
+}
+
+/// A paper-collection contract with an apartment or business.
+///
+/// Deliberately minimal — invoice generation, not a general ledger. It exists so an org's
+/// recycling can be billed (or credited) on agreed terms, and so an ESG report can state the
+/// commercial basis. A real accounts-receivable system is out of scope and out of this phase.
+model OrgContract {
+  id String @id @default(uuid()) @db.Uuid
+
+  orgKind OrgKind
+
+  apartmentId String?    @db.Uuid
+  apartment   Apartment? @relation(fields: [apartmentId], references: [id], onDelete: Restrict)
+  businessId  String?    @db.Uuid
+  business    Business?  @relation(fields: [businessId], references: [id], onDelete: Restrict)
+
+  type ContractType
+
+  /// INTEGER PAISE. Set for FLAT_MONTHLY (the period fee); null for PER_KG.
+  flatAmountPaise Int?
+
+  /// INTEGER PAISE PER KG. Set for PER_KG; null for FLAT_MONTHLY. Money is paise everywhere;
+  /// a per-kg rate is still paise, just per kilogram.
+  perKgRatePaise Int?
+
+  status ContractStatus @default(ACTIVE)
+
+  /// Date-only, like every calendar concept here.
+  startDate DateTime  @db.Date
+  endDate   DateTime? @db.Date
+
+  invoices OrgInvoice[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([apartmentId])
+  @@index([businessId])
+  @@index([status])
+  @@map("org_contracts")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PAID
+}
+
+/// One invoice, for one contract, for one period.
+model OrgInvoice {
+  id String @id @default(uuid()) @db.Uuid
+
+  contractId String      @db.Uuid
+  contract   OrgContract @relation(fields: [contractId], references: [id], onDelete: Restrict)
+
+  orgKind OrgKind
+
+  apartmentId String? @db.Uuid
+  businessId  String? @db.Uuid
+
+  /// `YYYY-MM` for a monthly invoice; the period is [periodStart, periodEnd].
+  periodLabel String
+  periodStart DateTime @db.Date
+  periodEnd   DateTime @db.Date
+
+  /// A SNAPSHOT of the terms at issue time. The contract may change later; a past invoice
+  /// must still reconstruct to the figure it was issued at — the same discipline the wallet
+  /// uses when it copies the rate onto a pickup item.
+  contractType    ContractType
+  flatAmountPaise Int?
+  perKgRatePaise  Int?
+
+  /// The confirmed-recycled weight the invoice was computed against. Grams, snapshotted.
+  recycledGrams Int @default(0)
+
+  /// INTEGER PAISE. The billed amount, computed once at issue and stored.
+  amountPaise Int
+
+  status InvoiceStatus @default(DRAFT)
+
+  issuedAt DateTime?
+  paidAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// At most one invoice per contract per period. A re-run of invoice generation collides
+  /// here rather than double-billing an org.
+  @@unique([contractId, periodLabel])
+  @@index([apartmentId])
+  @@index([businessId])
+  @@index([status])
+  @@map("org_invoices")
 }

@@ -44,6 +44,9 @@ export interface PickupRepository {
     windowStartHour: number;
     windowEndHour: number;
     qrToken: string;
+    /** Org attribution for a common-area pickup. Both null for an individual resident's pickup. */
+    apartmentId?: string | null;
+    businessId?: string | null;
   }): Promise<PickupRecord>;
 
   findById(id: string): Promise<PickupRecord | null>;

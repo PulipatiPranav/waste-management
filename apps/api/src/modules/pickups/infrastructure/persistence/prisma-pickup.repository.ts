@@ -27,6 +27,8 @@ export class PrismaPickupRepository implements PickupRepository {
     windowStartHour: number;
     windowEndHour: number;
     qrToken: string;
+    apartmentId?: string | null;
+    businessId?: string | null;
   }): Promise<PickupRecord> {
     const row = await this.prisma.pickupRequest.create({
       data: {
@@ -36,6 +38,8 @@ export class PrismaPickupRepository implements PickupRepository {
         windowStartHour: input.windowStartHour,
         windowEndHour: input.windowEndHour,
         qrToken: input.qrToken,
+        apartmentId: input.apartmentId ?? null,
+        businessId: input.businessId ?? null,
       },
       include: withItems,
     });

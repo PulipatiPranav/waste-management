@@ -3,10 +3,9 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 6 — sustainability impact engine.** Confirmed-recycled weight is converted
-> into estimated CO2 avoided, water and energy saved, trees-equivalent and landfill diversion,
-> using cited conversion factors, and served as per-user / per-org / per-platform dashboards.
-> No marketplace yet.
+> **Status: Phase 7 — apartment & business accounts.** Multi-user org tenants with member
+> management, common-area pickups, flat/per-kg contracts, invoicing, and downloadable ESG
+> report PDFs — all behind strict, query-layer tenant isolation. No marketplace yet.
 >
 > ⚠️ **Read [Regulatory: the wallet is not a licensed instrument](#regulatory-the-wallet-is-not-a-licensed-instrument) before piloting with real money.**
 >
@@ -682,6 +681,58 @@ once, at the DTO edge), so per-user, per-org and per-platform totals reconcile e
 Org dashboards (`apartments`, `businesses`) roll up over member users via a resolver that
 returns empty until **Phase 7** wires membership — so a business admin sees an honest "0 kg so
 far" rather than a 500, and the dashboards light up in Phase 7 with no change to this engine.
+
+## Organisational accounts (Phase 7)
+
+```
+GET/POST/DELETE /api/v1/orgs/:orgType/:orgId/members         manage residents/employees
+GET  /api/v1/orgs/:orgType/:orgId/impact                     the org's aggregate recycling impact
+POST /api/v1/orgs/:orgType/:orgId/pickups                    schedule a common-area / bulk pickup
+POST/GET /api/v1/orgs/:orgType/:orgId/contracts             flat-monthly or per-kg contracts
+POST/GET /api/v1/orgs/:orgType/:orgId/invoices              generate (idempotent) + list invoices
+GET  /api/v1/orgs/:orgType/:orgId/esg-report?yearMonth=…     download the ESG report PDF
+```
+
+`:orgType` is `apartments` or `businesses`. Apartments and businesses become multi-user
+tenants, and Phase 6's org impact dashboards — which reported zero behind a stubbed resolver —
+now light up, because the membership resolver is backed by the real member table.
+
+### Tenant isolation is the whole point, and it lives at the query layer
+
+The brief called this out as the phase's priority, and it is enforced where it must be — not
+in the UI. Every org operation resolves the caller's memberships **fresh from the database**
+(never from the token; an admin's grant can be revoked mid-session) and passes them through one
+pure gate (`tenant-access.ts`) before any data is touched. A real, authenticated org admin
+reaching for another org's `:orgId` gets a **403 that reveals nothing** — same response whether
+the target exists or not.
+
+Because every path goes through that gate, isolation is a property of the module, not of each
+author remembering a `where` clause. The e2e suite is deliberately adversarial: it logs in as a
+genuine business admin and tries to read, write, invoice, and pull the ESG report of _another_
+business — every one returns 403. It also proves a plain **member** (belonging ≠ administering)
+and a customer with no org role are refused, and that an apartment id cannot be used to reach a
+business (the check keys on kind, not just id).
+
+Two governance rules are enforced in the database, not just code: **one admin per org** (a
+single accountable owner; partial unique index) and **exactly one org per membership/contract**
+(check constraint). An admin cannot remove themselves and orphan the org.
+
+### Contracts, invoices, and the ESG report
+
+Contracts are **flat-monthly** or **per-kg**. A per-kg invoice bills the org's
+confirmed-recycled weight for the month (from Phase 6) × the rate, with the same
+single-half-up-rounding-in-paise discipline the cashback ledger uses. Invoice generation is
+**idempotent** — the `(contract, period)` unique index means a re-run returns the existing
+invoice rather than double-billing — and the terms and amount are **snapshotted** onto the
+invoice, so a later contract change never rewrites a past bill.
+
+The **ESG report** is a downloadable PDF (`Content-Disposition: attachment`) built from the
+Phase 6 sustainability figures, carrying the methodology block **and the honesty disclaimer on
+the document itself** — a business puts this in their CSR filing, so "not a certified carbon
+offset" has to travel with it, not sit in an API field nobody reads. Rendering goes through an
+`EsgReportRenderer` port; the shipped adapter is **PDFKit** (chosen over Puppeteer to keep
+Chromium — ~300 MB and a browser's attack surface — out of every pod), and swapping it for an
+HTML export or a rendering microservice is one binding.
 
 ## Production readiness
 
