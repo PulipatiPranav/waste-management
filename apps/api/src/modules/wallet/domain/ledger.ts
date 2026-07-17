@@ -5,6 +5,9 @@ export const WALLET_TXN_TYPES = [
   'WITHDRAWAL_DEBIT',
   'WITHDRAWAL_REVERSAL',
   'ADJUSTMENT',
+  // Phase 8 marketplace: the wallet portion of an order, and its reversal on cancel/refund.
+  'ORDER_PAYMENT',
+  'ORDER_REFUND',
 ] as const;
 
 export type WalletTxnType = (typeof WALLET_TXN_TYPES)[number];

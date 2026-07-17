@@ -177,6 +177,33 @@ export const envSchema = z.object({
     .string()
     .default('true')
     .transform((value) => value === 'true'),
+
+  // --- Marketplace payments (Phase 8) ---------------------------------------
+
+  /**
+   * Which payment gateway backs the card/UPI leg of a marketplace order.
+   *
+   * `fake` is a deterministic in-process gateway for local dev and tests: it mints
+   * predictable order ids and never calls a network, but signs and verifies webhooks with
+   * the SAME real HMAC scheme as Razorpay, so the signature path is exercised for real. It
+   * is REFUSED in production (see the superRefine) — shipping it would mean orders that
+   * "confirm" without any money ever moving.
+   */
+  PAYMENT_GATEWAY_PROVIDER: z.enum(['fake', 'razorpay']).default('fake'),
+
+  PAYMENT_CURRENCY: z.string().length(3).default('INR'),
+
+  /**
+   * The webhook signing secret. HMAC-SHA256 over the raw request body is compared against
+   * this — it is the ONLY thing standing between our confirmation flow and anyone on the
+   * internet who finds the webhook URL. No production default, deliberately: a shared
+   * fallback secret is a forged-webhook-away from confirming orders nobody paid for.
+   */
+  PAYMENT_WEBHOOK_SECRET: z.string().min(16).default('whsec_dev_only_change_me_please'),
+
+  /** Razorpay API credentials. Required only when PAYMENT_GATEWAY_PROVIDER=razorpay. */
+  RAZORPAY_KEY_ID: z.string().optional(),
+  RAZORPAY_KEY_SECRET: z.string().optional(),
 });
 
 /**
@@ -210,6 +237,41 @@ export const envSchemaWithRules = envSchema.superRefine((env, ctx) => {
       code: 'custom',
       path: ['SWAGGER_ENABLED'],
       message: 'Swagger must be disabled in production: it enumerates every endpoint and DTO.',
+    });
+  }
+
+  if (env.NODE_ENV === 'production' && env.PAYMENT_GATEWAY_PROVIDER === 'fake') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['PAYMENT_GATEWAY_PROVIDER'],
+      message:
+        'The fake payment gateway cannot be used in production: orders would confirm without any ' +
+        'money moving. Set PAYMENT_GATEWAY_PROVIDER=razorpay and provide the Razorpay credentials.',
+    });
+  }
+
+  if (
+    env.PAYMENT_GATEWAY_PROVIDER === 'razorpay' &&
+    (env.RAZORPAY_KEY_ID === undefined || env.RAZORPAY_KEY_SECRET === undefined)
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['RAZORPAY_KEY_ID'],
+      message:
+        'RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are required when PAYMENT_GATEWAY_PROVIDER=razorpay.',
+    });
+  }
+
+  if (
+    env.NODE_ENV === 'production' &&
+    env.PAYMENT_WEBHOOK_SECRET === 'whsec_dev_only_change_me_please'
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['PAYMENT_WEBHOOK_SECRET'],
+      message:
+        'The default PAYMENT_WEBHOOK_SECRET cannot be used in production: a known signing secret ' +
+        'lets anyone forge a webhook and confirm unpaid orders. Set a real one from the gateway dashboard.',
     });
   }
 });

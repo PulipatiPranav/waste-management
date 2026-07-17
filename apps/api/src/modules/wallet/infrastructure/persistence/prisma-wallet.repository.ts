@@ -3,7 +3,8 @@ import { Prisma } from '@prisma/client';
 
 import { ConflictError, NotFoundError } from '@/shared/domain/errors/domain.error';
 import { PrismaService } from '@/shared/infrastructure/persistence/prisma/prisma.service';
-import { applyEntry, type WalletTxnDirection, type WalletTxnType } from '../../domain/ledger';
+import { type WalletTxnDirection, type WalletTxnType } from '../../domain/ledger';
+import { WalletLedgerWriter } from './wallet-ledger.writer';
 import { calculateCashback, type PaperType, type WeighedItem } from '../../domain/money';
 import {
   type CompletedPickupResult,
@@ -24,47 +25,24 @@ type Tx = Prisma.TransactionClient;
 export class PrismaWalletRepository implements WalletRepository {
   private readonly logger = new Logger(PrismaWalletRepository.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // The ledger append/lock primitive lives in one place (shared with the marketplace's
+    // order-confirmation transaction). This repository owns the wallet-specific flows;
+    // WalletLedgerWriter owns "how a ledger entry is written safely".
+    private readonly ledger: WalletLedgerWriter,
+  ) {}
 
   // -------------------------------------------------------------------------
-  // The core primitive: append one ledger entry, under a row lock.
+  // The core primitive: delegated to WalletLedgerWriter so there is exactly one
+  // implementation of "lock a wallet" and "append an entry" in the codebase.
   // -------------------------------------------------------------------------
 
-  /**
-   * Locks the wallet row and returns its balance.
-   *
-   * `SELECT ... FOR UPDATE` is the whole concurrency story of this module. Without it,
-   * two simultaneous cashback credits both read balance=1000, both compute
-   * balanceAfter=1500, and one of them is silently lost — the customer is paid once for
-   * two pickups, and the only trace is a ledger that no longer reconciles. The lock makes
-   * Postgres serialise the two transactions on this row: the second waits, then reads the
-   * balance the first actually committed.
-   *
-   * Must only ever be called INSIDE a transaction — the lock is released at commit.
-   */
-  private async lockWallet(tx: Tx, walletId: string): Promise<bigint> {
-    const rows = await tx.$queryRaw<{ balancePaise: bigint }[]>`
-      SELECT "balancePaise" FROM "wallets" WHERE "id" = ${walletId}::uuid FOR UPDATE
-    `;
-
-    const row = rows[0];
-
-    if (row === undefined) {
-      throw new NotFoundError('Wallet not found');
-    }
-
-    return row.balancePaise;
+  private lockWallet(tx: Tx, walletId: string): Promise<bigint> {
+    return this.ledger.lockWallet(tx, walletId);
   }
 
-  /**
-   * Appends one entry and updates the cached balance. Caller supplies the transaction
-   * AND must already hold the wallet lock.
-   *
-   * The ledger row is the truth; `wallets.balancePaise` is a cache so a read does not
-   * have to sum a million rows. They are written together, in one transaction, or not at
-   * all.
-   */
-  private async appendEntry(
+  private appendEntry(
     tx: Tx,
     input: {
       walletId: string;
@@ -78,34 +56,7 @@ export class PrismaWalletRepository implements WalletRepository {
       actorUserId?: string | undefined;
     },
   ): Promise<{ transactionId: string; balanceAfterPaise: bigint }> {
-    // Pure domain: computes balanceAfter and throws InsufficientBalanceError on overdraw.
-    const entry = applyEntry(input.currentBalance, {
-      type: input.type,
-      direction: input.direction,
-      amountPaise: input.amountPaise,
-    });
-
-    const created = await tx.walletTransaction.create({
-      data: {
-        walletId: input.walletId,
-        type: input.type,
-        direction: input.direction,
-        amountPaise: input.amountPaise,
-        balanceAfterPaise: entry.balanceAfterPaise,
-        pickupId: input.pickupId ?? null,
-        withdrawalId: input.withdrawalId ?? null,
-        note: input.note ?? null,
-        actorUserId: input.actorUserId ?? null,
-      },
-      select: { id: true },
-    });
-
-    await tx.wallet.update({
-      where: { id: input.walletId },
-      data: { balancePaise: entry.balanceAfterPaise },
-    });
-
-    return { transactionId: created.id, balanceAfterPaise: entry.balanceAfterPaise };
+    return this.ledger.append(tx, input);
   }
 
   // -------------------------------------------------------------------------

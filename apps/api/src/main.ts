@@ -11,7 +11,10 @@ import { type Env } from './config/env.schema';
 import { RedisIoAdapter } from './shared/infrastructure/realtime/redis-io.adapter';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, { bufferLogs: false });
+  // `rawBody: true` preserves the exact request bytes on `req.rawBody`, which the payment
+  // webhook needs: its HMAC signature is over the raw body, and a re-serialised parsed JSON
+  // has different whitespace and key order, so every valid webhook would fail to verify.
+  const app = await NestFactory.create(AppModule, { bufferLogs: false, rawBody: true });
   const config = app.get<ConfigService<Env, true>>(ConfigService);
   const logger = new Logger('Bootstrap');
 

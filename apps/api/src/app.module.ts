@@ -8,6 +8,7 @@ import { CatalogModule } from './modules/catalog/catalog.module';
 import { DeliveryModule } from './modules/delivery/delivery.module';
 import { HealthModule } from './modules/health/health.module';
 import { ImpactModule } from './modules/impact/impact.module';
+import { MarketplaceModule } from './modules/marketplace/marketplace.module';
 import { OrgsModule } from './modules/orgs/orgs.module';
 import { PickupsModule } from './modules/pickups/pickups.module';
 import { RecyclingModule } from './modules/recycling/recycling.module';
@@ -43,6 +44,7 @@ import { CorrelationIdMiddleware } from './shared/presentation/middleware/correl
     RecyclingModule,
     ImpactModule,
     OrgsModule,
+    MarketplaceModule,
     HealthModule,
   ],
   providers: [

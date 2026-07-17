@@ -3,9 +3,11 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 7 — apartment & business accounts.** Multi-user org tenants with member
-> management, common-area pickups, flat/per-kg contracts, invoicing, and downloadable ESG
-> report PDFs — all behind strict, query-layer tenant isolation. No marketplace yet.
+> **Status: Phase 8 — marketplace.** The loop closes: recycled-paper goods are sold back to
+> customers, paid for partly with the wallet balance they earned recycling and partly by card,
+> with order confirmation atomic across inventory, wallet, and gateway. Standard e-commerce
+> flow (browse → cart → checkout → webhook → fulfilment), oversell-safe under concurrency,
+> idempotent against duplicate webhooks.
 >
 > ⚠️ **Read [Regulatory: the wallet is not a licensed instrument](#regulatory-the-wallet-is-not-a-licensed-instrument) before piloting with real money.**
 >
@@ -734,11 +736,72 @@ offset" has to travel with it, not sit in an API field nobody reads. Rendering g
 Chromium — ~300 MB and a browser's attack surface — out of every pod), and swapping it for an
 HTML export or a rendering microservice is one binding.
 
+## Marketplace (Phase 8)
+
+```
+GET  /api/v1/marketplace/products                    browse (active products, verified sellers)
+GET  /api/v1/marketplace/products/:slug              product detail
+GET/POST/PUT /api/v1/marketplace/cart[/items[/:id]]  one live cart per user
+POST /api/v1/marketplace/checkout                    snapshot prices, split wallet/gateway, start payment
+GET  /api/v1/marketplace/orders[/:id]                my orders (status tracking)
+POST /api/v1/marketplace/webhooks/payment            gateway → us (signed, idempotent)
+POST /api/v1/admin/marketplace/sellers[/:id/transition]   onboard + verify/suspend/reinstate
+POST /api/v1/admin/marketplace/products[/:id/...]         catalogue, variants, stock
+POST /api/v1/admin/marketplace/orders/:id/fulfil          SHIP / DELIVER
+```
+
+The recycled paper that left in Phase 5 comes back as notebooks and stationery a customer can
+buy — and pay for **partly with the wallet balance they earned recycling** (Phase 4), partly by
+card. Money is integer paise end to end, as everywhere else.
+
+### Order confirmation is atomic across three ledgers
+
+Checkout snapshots each line's price onto an immutable order, splits the total between wallet and
+gateway (`walletPaise + gatewayPaise = total`, a DB CHECK constraint, never trusted from the
+client), and either **confirms synchronously** (fully wallet-paid — no external leg to wait on) or
+returns a gateway handoff for the card leg. **Nothing moves until confirmation.**
+
+Confirmation — triggered by the gateway's signed webhook — does three things in **one database
+transaction**: decrement every line's stock, debit the wallet portion, capture the payment. If any
+leg throws, all of it rolls back. The wallet debit reuses the Phase 4 ledger's exact primitive
+(`WalletLedgerWriter`, shared into this transaction) rather than a second copy of "debit a wallet"
+— an `ORDER_PAYMENT` row under the same row lock, with a partial-unique index guaranteeing **at
+most one debit per order**. Because the two funding legs commit at different times (the card at the
+gateway, the wallet in our DB), "atomic" is completed by a **compensating refund**: if the wallet
+debit fails after the card was captured — the customer spent their balance elsewhere in between —
+the order is failed and the gateway is refunded, so the two legs still settle as one outcome.
+
+### The three properties the brief singles out, tested against real Postgres
+
+- **Inventory never oversells under concurrency.** Stock is decremented with a conditional
+  `UPDATE ... WHERE stock >= qty`; the loser of a race for the last unit matches zero rows and the
+  order fails. A `stock >= 0` CHECK is the backstop. The e2e test fires **eight concurrent
+  confirmations at three units** and asserts exactly three confirm, five sell out, and stock lands
+  at zero — never negative.
+- **Split-payment atomicity.** The test drains the wallet between checkout and webhook so the debit
+  must fail, then asserts the order is FAILED, **stock was not decremented** (it rolled back with
+  the failed debit — the proof), no `ORDER_PAYMENT` landed, and the gateway was refunded.
+- **Webhook idempotency.** A gateway delivers the same event twice; the `(provider, eventId)` unique
+  index, inserted inside the confirmation transaction, means the replay aborts and is a no-op. The
+  test sends the identical webhook twice and asserts stock decremented once, wallet debited once,
+  one webhook-event row.
+
+### Payment gateway behind a port; sellers reuse the verification pattern
+
+All business logic talks to a `PaymentGateway` port — no use-case or repository imports a vendor
+SDK. **Razorpay** is the shipped adapter (plain REST over `fetch`, the default for Indian consumer
+apps); a deterministic **in-process fake** backs local dev and tests, signing webhooks with the
+same real HMAC-SHA256 scheme so the signature path is exercised for real (and refused in
+production). Webhook signatures are verified over the **raw request bytes** with a constant-time
+compare before anything is parsed. Sellers are verified through the **same
+`PENDING → VERIFIED → SUSPENDED` lifecycle as recycling partners** (`shared/domain/partner-verification`),
+not a bespoke per-partner-type flow — only a verified seller's products can go live.
+
 ## Production readiness
 
 **This is a working, well-tested pilot build — not a production deployment.** The core loop
-(subscribe → deliver → pick up → weigh → pay → batch → recycle → trace) runs end to end, with
-261 unit and 141 e2e tests against real Postgres and Redis. But the build plan puts real
+(subscribe → deliver → pick up → weigh → pay → batch → recycle → trace → sell) runs end to end,
+with 328 unit and 160 e2e tests against real Postgres and Redis. But the build plan puts real
 production hardening in Phases 14–15 (observability, OWASP pass, load testing, k8s, secrets,
 CI/CD to a cluster), and this pass does **not** short-circuit those. What that means concretely:
 
@@ -765,7 +828,9 @@ CI/CD to a cluster), and this pass does **not** short-circuit those. What that m
   cluster, no runbook. Secrets today live in `.env` files. → **Phase 15.**
 - **RBI PPI / DPDP / gig-worker classification** are unresolved legal questions (see below and
   the Phase 16 checklist). None are engineering problems; all can block a public launch.
-- **A real SMS provider and real S3-compatible storage** must replace the dev stubs.
+- **A real SMS provider, real S3-compatible storage, and a real payment gateway** must replace
+  the dev stubs. `PAYMENT_GATEWAY_PROVIDER=fake` and the default webhook secret are refused in
+  production; set `razorpay` with real credentials and a real webhook secret before any live money.
 - **The nightly jobs run on every replica.** With more than one pod you'll plan/batch/reconcile
   N times. Harmless (all idempotent) but wasteful — gate them to one worker in Phase 15.
 

@@ -79,6 +79,8 @@ model User {
   idempotencyKeys IdempotencyKey[]
   impactMonthly   ImpactMonthly[]
   orgMemberships  OrgMember[]
+  cart            Cart?
+  orders          Order[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -168,6 +170,7 @@ model Address {
   subscriptions  Subscription[]
   deliveryStops  DeliveryStop[]
   pickupRequests PickupRequest[]
+  orders         Order[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -852,6 +855,11 @@ enum WalletTxnType {
   WITHDRAWAL_REVERSAL
   /// Manual correction by ops. Always leaves an audit trail.
   ADJUSTMENT
+  /// The wallet portion of a marketplace order (Phase 8). A debit, taken atomically with
+  /// inventory decrement and the gateway charge inside order confirmation.
+  ORDER_PAYMENT
+  /// Reversal of an ORDER_PAYMENT when an order is cancelled or refunded. A new row.
+  ORDER_REFUND
 }
 
 enum WalletTxnDirection {
@@ -909,6 +917,12 @@ model WalletTransaction {
   withdrawalId String?            @db.Uuid
   withdrawal   WithdrawalRequest? @relation(fields: [withdrawalId], references: [id], onDelete: Restrict)
 
+  /// The marketplace order this entry pays for or refunds (Phase 8). A partial unique index
+  /// on (orderId) WHERE type = 'ORDER_PAYMENT' guarantees at most ONE wallet debit per order,
+  /// so a replayed confirmation cannot debit the wallet twice — the guard is at the database.
+  orderId String? @db.Uuid
+  order   Order?  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
   /// Free text for ADJUSTMENT, and the rejection reason on a reversal.
   note String?
 
@@ -922,6 +936,7 @@ model WalletTransaction {
   /// Every ledger read orders by `seq`, so this is the index that serves them.
   @@index([walletId, seq])
   @@index([type])
+  @@index([orderId])
   @@map("wallet_transactions")
 }
 
@@ -1421,4 +1436,287 @@ model OrgInvoice {
   @@index([businessId])
   @@index([status])
   @@map("org_invoices")
+}
+
+// ============================================================================
+// PHASE 8 — Marketplace for products made from recycled paper
+//
+// Closes the loop: the recycled paper that left the platform in Phase 5 comes back as
+// notebooks, packaging and stationery a customer can buy — partly with the wallet balance
+// they earned recycling (Phase 4), partly with a card. Money is INTEGER PAISE throughout,
+// as everywhere else. Order confirmation is the one flow that must be atomic across three
+// ledgers at once — inventory, wallet, and the gateway payment — and the whole design of
+// this section exists to make that atomicity a property the database enforces, not a
+// property each code path remembers.
+// ============================================================================
+
+enum SellerStatus {
+  /// Onboarded, not yet verified. Its products are never ACTIVE, so nothing it lists can be
+  /// bought. Same shape as RecyclingPartnerStatus (Phase 5) — see shared/domain/partner-verification.
+  PENDING
+  VERIFIED
+  /// Failed verification or offboarded. Keeps its catalogue and order history; sells nothing new.
+  SUSPENDED
+}
+
+/// A manufacturer/supplier of recycled-paper goods. Verification reuses the same
+/// PENDING → VERIFIED → SUSPENDED pattern as recycling partners, deliberately: a platform
+/// with a different bespoke verification flow per partner type is a platform where one of
+/// them is quietly wrong.
+model Seller {
+  id     String       @id @default(uuid()) @db.Uuid
+  name   String       @unique
+  status SellerStatus @default(PENDING)
+
+  /// Business identifiers, for the same reason a recycler's are stored: an auditor asks who
+  /// supplied the goods, and "a seller in Pune" is not an answer.
+  gstin String?
+
+  contactName  String
+  contactPhone String
+  city         String
+  state        String
+
+  verifiedAt       DateTime?
+  verifiedByUserId String?   @db.Uuid
+
+  products Product[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@map("sellers")
+}
+
+enum ProductStatus {
+  /// Being set up. Invisible to customers.
+  DRAFT
+  /// Buyable — appears in the catalogue.
+  ACTIVE
+  /// Retired. Kept for order history, never shown or sold.
+  ARCHIVED
+}
+
+model Product {
+  id       String @id @default(uuid()) @db.Uuid
+  sellerId String @db.Uuid
+  seller   Seller @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+
+  name String
+  /// URL-safe handle, unique across the catalogue. Stable even if the name changes.
+  slug String @unique
+
+  description     String
+  /// The recycled-content story a buyer is actually here for, e.g. "100% post-consumer waste".
+  recycledContent String?
+
+  status ProductStatus @default(DRAFT)
+
+  variants ProductVariant[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([sellerId])
+  @@map("products")
+}
+
+model ProductVariant {
+  id        String  @id @default(uuid()) @db.Uuid
+  productId String  @db.Uuid
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  /// Stock-keeping unit, unique across the catalogue.
+  sku  String @unique
+  /// What distinguishes this variant, e.g. "A5 / 160 pages / ruled".
+  name String
+
+  /// INTEGER PAISE. CHECK (pricePaise >= 0).
+  pricePaise Int
+
+  /// Units on hand. THE number the oversell guard protects. Decremented with a conditional
+  /// UPDATE ... WHERE stock >= qty inside order confirmation, and CHECK (stock >= 0) is the
+  /// backstop: even a bug that bypassed the guard cannot drive it negative.
+  stock Int @default(0)
+
+  isActive Boolean @default(true)
+
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
+  @@map("product_variants")
+}
+
+/// One live cart per user. A build-up area only — nothing here is reserved or priced-in
+/// stone; prices and stock are re-read and re-snapshotted at checkout.
+model Cart {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  items CartItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("carts")
+}
+
+model CartItem {
+  id     String @id @default(uuid()) @db.Uuid
+  cartId String @db.Uuid
+  cart   Cart   @relation(fields: [cartId], references: [id], onDelete: Cascade)
+
+  variantId String         @db.Uuid
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  /// CHECK (quantity > 0). Adding the same variant again accumulates rather than duplicating.
+  quantity Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// One line per variant per cart.
+  @@unique([cartId, variantId])
+  @@map("cart_items")
+}
+
+enum OrderStatus {
+  /// Created at checkout, awaiting the gateway's confirmation. No stock or wallet moved yet.
+  PENDING_PAYMENT
+  /// Paid and reserved: inventory decremented, wallet debited, gateway captured — all atomically.
+  CONFIRMED
+  SHIPPED
+  DELIVERED
+  /// Buyer or ops cancelled. Any wallet debit is reversed; any gateway capture is refunded.
+  CANCELLED
+  /// Confirmation could not complete (oversold, or the wallet balance moved). Nothing was
+  /// charged that is not refunded. A terminal, honest dead-end — not a silent retry loop.
+  FAILED
+}
+
+model Order {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  status OrderStatus @default(PENDING_PAYMENT)
+
+  /// All INTEGER PAISE, snapshotted at checkout so a later price or contract change never
+  /// rewrites what the customer agreed to pay.
+  ///   subtotalPaise      = sum of the order lines
+  ///   totalPaise         = subtotal (no shipping/tax in this phase; named so adding them later is honest)
+  ///   walletAppliedPaise = the wallet portion the customer chose (0..total)
+  ///   gatewayAmountPaise  = total - walletApplied; what the card leg must capture
+  subtotalPaise      Int
+  totalPaise         Int
+  walletAppliedPaise Int @default(0)
+  gatewayAmountPaise Int
+
+  shippingAddressId String?  @db.Uuid
+  shippingAddress   Address? @relation(fields: [shippingAddressId], references: [id], onDelete: Restrict)
+
+  items      OrderItem[]
+  payment    Payment?
+  walletTxns WalletTransaction[]
+
+  confirmedAt   DateTime?
+  cancelledAt   DateTime?
+  /// Why an order is FAILED or CANCELLED — shown to the customer and the auditor.
+  failureReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@map("orders")
+}
+
+model OrderItem {
+  id      String @id @default(uuid()) @db.Uuid
+  orderId String @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  /// Restrict: a variant with order history cannot be deleted out from under it. The names
+  /// and price below are SNAPSHOTS taken at checkout, so the order reads correctly even if
+  /// the variant is later renamed, repriced, or archived.
+  variantId String         @db.Uuid
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  productName String
+  variantName String
+  sku         String
+
+  /// INTEGER PAISE, frozen at checkout. lineTotalPaise = unitPricePaise * quantity.
+  unitPricePaise Int
+  quantity       Int
+  lineTotalPaise Int
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+enum PaymentStatus {
+  /// A gateway order was created; the customer has not paid yet.
+  CREATED
+  /// Money captured at the gateway (the webhook that confirms the order).
+  CAPTURED
+  /// The gateway reported failure.
+  FAILED
+  /// Captured, then returned — the compensating action when order confirmation could not complete.
+  REFUNDED
+}
+
+/// The card/UPI leg of an order. Exactly one per order (the wallet leg lives in the ledger).
+/// A fully-wallet-paid order has no Payment row at all.
+model Payment {
+  id      String @id @default(uuid()) @db.Uuid
+  orderId String @unique @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  /// "razorpay" etc. The business logic never reads this — it talks to the PaymentGateway
+  /// port — but an operator answering "which gateway took this?" needs it recorded.
+  provider String
+
+  /// The gateway's order id, unique. gatewayPaymentId is set on capture.
+  gatewayOrderId   String  @unique
+  gatewayPaymentId String? @unique
+
+  /// INTEGER PAISE — the gateway portion only (== Order.gatewayAmountPaise).
+  amountPaise Int
+
+  status PaymentStatus @default(CREATED)
+
+  refundId   String?
+  capturedAt DateTime?
+  refundedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@map("payments")
+}
+
+/// The idempotency ledger for gateway webhooks. A gateway CAN and DOES deliver the same
+/// event twice; the unique (provider, eventId) index is what makes reprocessing impossible —
+/// the second delivery collides here, inside the same transaction that confirms the order,
+/// so a replay can neither double-decrement stock nor double-debit the wallet.
+model WebhookEvent {
+  id        String @id @default(uuid()) @db.Uuid
+  provider  String
+  eventId   String
+  eventType String
+
+  processedAt DateTime @default(now())
+
+  @@unique([provider, eventId])
+  @@map("webhook_events")
 }
