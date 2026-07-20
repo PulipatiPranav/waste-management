@@ -1,7 +1,12 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
+import {
+  NOTIFICATION_DISPATCHER,
+  type NotificationDispatcher,
+} from '@/modules/notifications/domain/ports/notification-dispatcher.port';
 import { ConflictError, ForbiddenError, NotFoundError } from '@/shared/domain/errors/domain.error';
 import { InsufficientBalanceError, reconcile, type WalletTxnDirection } from '../domain/ledger';
+import { paiseToRupees } from '../domain/money';
 import {
   WALLET_REPOSITORY,
   type LedgerRow,
@@ -18,7 +23,10 @@ const MIN_WITHDRAWAL_PAISE = 10_000n; // ₹100
 export class WalletUseCases {
   private readonly logger = new Logger(WalletUseCases.name);
 
-  constructor(@Inject(WALLET_REPOSITORY) private readonly wallet: WalletRepository) {}
+  constructor(
+    @Inject(WALLET_REPOSITORY) private readonly wallet: WalletRepository,
+    @Inject(NOTIFICATION_DISPATCHER) private readonly notifications: NotificationDispatcher,
+  ) {}
 
   // --- Customer -------------------------------------------------------------
 
@@ -93,7 +101,17 @@ export class WalletUseCases {
 
     this.logger.log(`Withdrawal ${withdrawal.id} APPROVED by ${actorUserId}`);
 
-    return this.wallet.approveWithdrawal({ withdrawalId, actorUserId });
+    const updated = await this.wallet.approveWithdrawal({ withdrawalId, actorUserId });
+
+    void this.notifications.dispatch({
+      userId: withdrawal.userId,
+      category: 'WITHDRAWAL_UPDATE',
+      title: 'Withdrawal approved',
+      body: `Your withdrawal of ₹${paiseToRupees(withdrawal.amountPaise)} has been approved and is being paid out.`,
+      data: { type: 'withdrawal_update', withdrawalId, status: 'APPROVED' },
+    });
+
+    return updated;
   }
 
   /** Rejects and refunds — with a new CREDIT row, never by editing the debit. */
@@ -102,11 +120,21 @@ export class WalletUseCases {
     actorUserId: string,
     reason: string,
   ): Promise<{ withdrawal: WithdrawalRow; balanceAfterPaise: bigint }> {
-    await this.requireWithdrawal(withdrawalId);
+    const withdrawal = await this.requireWithdrawal(withdrawalId);
 
     this.logger.log(`Withdrawal ${withdrawalId} REJECTED by ${actorUserId}: ${reason}`);
 
-    return this.wallet.rejectWithdrawal({ withdrawalId, actorUserId, reason });
+    const result = await this.wallet.rejectWithdrawal({ withdrawalId, actorUserId, reason });
+
+    void this.notifications.dispatch({
+      userId: withdrawal.userId,
+      category: 'WITHDRAWAL_UPDATE',
+      title: 'Withdrawal rejected',
+      body: `Your withdrawal of ₹${paiseToRupees(withdrawal.amountPaise)} was rejected and refunded to your wallet. Reason: ${reason}`,
+      data: { type: 'withdrawal_update', withdrawalId, status: 'REJECTED' },
+    });
+
+    return result;
   }
 
   /** A human confirms the bank transfer actually went out. */

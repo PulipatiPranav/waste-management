@@ -10,8 +10,12 @@ import {
   DELIVERY_REPOSITORY,
   type DeliveryRepository,
 } from '@/modules/delivery/domain/ports/delivery.repository';
+import {
+  NOTIFICATION_DISPATCHER,
+  type NotificationDispatcher,
+} from '@/modules/notifications/domain/ports/notification-dispatcher.port';
 import { Day } from '@/modules/subscriptions/domain/value-objects/day';
-import { calculateCashback, type PaperType } from '@/modules/wallet/domain/money';
+import { calculateCashback, paiseToRupees, type PaperType } from '@/modules/wallet/domain/money';
 import {
   WALLET_REPOSITORY,
   type CompletedPickupResult,
@@ -46,6 +50,7 @@ export class PickupUseCases {
     @Inject(DELIVERY_REPOSITORY) private readonly delivery: DeliveryRepository,
     @Inject(WEIGHING_DEVICE_READER) private readonly scale: WeighingDeviceReader,
     @Inject(CLOCK) private readonly clock: Clock,
+    @Inject(NOTIFICATION_DISPATCHER) private readonly notifications: NotificationDispatcher,
   ) {}
 
   // --- Customer -------------------------------------------------------------
@@ -217,6 +222,19 @@ export class PickupUseCases {
     this.logger.log(
       `Pickup ${pickup.id} completed: ${result.totalWeightGrams} g -> ${result.totalPaise} paise credited`,
     );
+
+    // Fire-and-forget: the customer is credited whether or not the notification queue is up.
+    // dispatch() applies preferences and never throws, so this cannot affect the credit above.
+    void this.notifications.dispatch({
+      userId: pickup.userId,
+      category: 'PICKUP_CASHBACK',
+      title: 'Paper collected',
+      body:
+        result.totalPaise > 0
+          ? `We collected ${(result.totalWeightGrams / 1000).toFixed(2)} kg and credited ₹${paiseToRupees(result.totalPaise)} to your wallet.`
+          : 'We collected your paper. No cashback was due this time.',
+      data: { type: 'pickup_cashback', pickupId: pickup.id },
+    });
 
     return { ...result, rateCardId: rateCard.id };
   }

@@ -3,11 +3,11 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 9 — ops console.** The internal staff dashboard (`apps/admin`, Next.js) now
-> consumes the API: staff login with role-gated navigation, a live delivery feed over the Phase 3
-> WebSocket, wallet-ledger oversight ("why does this wallet say ₹X?"), chain-of-custody, org and
-> marketplace management, and an audit trail. Admin & API stay type-synced via OpenAPI-generated
-> types, and a global interceptor writes an audit row for every mutating staff action.
+> **Status: Phase 10 — push notifications.** Delivery, pickup+cashback, withdrawal, order and
+> reminder events now notify the customer via FCM/APNs behind one `NotificationProvider`, sent off
+> a BullMQ queue with retry/backoff and a dead-letter log — a push that permanently fails is
+> recorded, never silently dropped. Preferences are per-category opt-out, and notifying a customer
+> can never fail the money-moving action that triggered it.
 >
 > ⚠️ **Read [Regulatory: the wallet is not a licensed instrument](#regulatory-the-wallet-is-not-a-licensed-instrument) before piloting with real money.**
 >
@@ -854,11 +854,62 @@ sensitive.
 > for an internal, staff-only tool over TLS (survives refresh, no CSRF dance), and called out as
 > deliberate rather than accidental. A public consumer app should prefer an httpOnly cookie.
 
+## Push notifications (Phase 10)
+
+```
+POST /api/v1/notifications/devices            register a device (FCM/APNs token) — idempotent
+POST /api/v1/notifications/devices/unregister forget a device
+GET/POST /api/v1/notifications/preferences    per-category opt-out
+GET  /api/v1/notifications                     my recent notifications
+GET  /api/v1/admin/notifications/dead-letters  ops: pushes that permanently failed
+```
+
+Six event types notify the customer: **delivery completed, pickup collected + cashback credited,
+withdrawal approved/rejected, subscription renewal reminder, order status change, pickup reminder.**
+
+### Sending never blocks — or breaks — the thing that triggered it
+
+Every trigger calls a `NotificationDispatcher` port and returns. The push itself — a slow, flaky,
+third-party call — happens later on a **BullMQ queue**. Two rules make this safe:
+
+- **`dispatch()` swallows its own errors.** A pickup is credited, a withdrawal is approved, an
+  order is confirmed _whether or not_ the notification queue is even up. A lost notification is a
+  bad day; a lost credit is a lawsuit. The trigger is fire-and-forget (`void dispatch(...)`).
+- **A failed push is recorded, never dropped.** The worker turns per-device outcomes into a
+  verdict (`retry-policy.ts`, pure and unit-tested): any device delivered → **SENT**; a transient
+  failure → **throw so BullMQ retries** with exponential backoff (5s→10s→20s→40s); every device
+  permanently dead, or attempts exhausted → **dead-letter** — a `FAILED` row with its error, listed
+  at `/admin/notifications/dead-letters`. Dead device tokens the provider reports are deactivated
+  so we stop pushing to them.
+
+### FCM and APNs behind one interface
+
+Business logic only ever sees `NotificationProvider`. A `CompositePushProvider` routes each send by
+platform — Android to **FCM** (HTTP v1, service-account JWT over `fetch`, no `firebase-admin` SDK),
+iOS to **APNs** (HTTP/2 + ES256 token auth). A deterministic in-process **fake** backs dev and
+tests (a `dead-`/`flaky-` token prefix forces a permanent/transient failure, so the retry and
+dead-letter paths are exercised without a device); it is refused in production. The one subtle,
+shared concern is error **classification** — an unregistered/bad token is permanent (deactivate),
+a quota/5xx is transient (retry) — because the whole retry policy hinges on getting it right.
+
+### Preferences are opt-out, per category
+
+A customer can silence renewal reminders without losing the "you were paid" push they actually
+want. The default is **on unless a row says otherwise**, so a new category needs no back-fill, and
+the opt-out is checked in **one place** — the dispatcher — so no individual trigger can forget it.
+
+### Reminders fire once, not every day
+
+The renewal and pickup reminders are daily BullMQ scans. The renewal one fires only when a
+subscription is **exactly** the configured lead-days from renewal (not `<=`), so a customer gets
+one reminder per cycle, not a nag every morning of the last three days — no dedup table needed
+(`renewal-schedule.ts`, pure, handles month-length clamping and is unit-tested).
+
 ## Production readiness
 
 **This is a working, well-tested pilot build — not a production deployment.** The core loop
 (subscribe → deliver → pick up → weigh → pay → batch → recycle → trace → sell) runs end to end,
-with 336 unit and 164 e2e tests against real Postgres and Redis on the API, plus an ops console
+with 359 unit and 171 e2e tests against real Postgres and Redis on the API, plus an ops console
 (`apps/admin`) with component tests for the critical support workflows. But the build plan puts
 real production hardening in Phases 14–15 (observability, OWASP pass, load testing, k8s, secrets,
 CI/CD to a cluster), and this pass does **not** short-circuit those. What that means concretely:

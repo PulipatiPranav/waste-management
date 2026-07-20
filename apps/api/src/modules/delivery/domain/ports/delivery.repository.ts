@@ -134,6 +134,9 @@ export interface DeliveryRepository {
 
   findRunById(id: string): Promise<RunRecord | null>;
 
+  /** The customer who owns a subscription — used to notify them their paper was delivered. */
+  findSubscriptionCustomerId(subscriptionId: string): Promise<string | null>;
+
   /** Moves a whole run to another partner. Refused once any stop has been actioned. */
   reassignRun(runId: string, toPartnerId: string): Promise<RunRecord>;
 

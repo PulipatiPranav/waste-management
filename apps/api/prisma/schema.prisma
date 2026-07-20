@@ -83,6 +83,10 @@ model User {
   orders          Order[]
   auditLogs       AuditLog[]
 
+  deviceTokens            DeviceToken[]
+  notificationPreferences NotificationPreference[]
+  notifications           Notification[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1777,4 +1781,115 @@ model AuditLog {
   @@index([targetId])
   @@index([createdAt])
   @@map("audit_logs")
+}
+
+// ============================================================================
+// PHASE 10 — Push notifications
+//
+// Sending a push is a slow, flaky, third-party network call, so it NEVER happens on the
+// request that triggers it — a pickup completes and the customer is credited whether or not
+// FCM is reachable that second. Triggers enqueue a job; a BullMQ worker sends it with
+// retry/backoff; a push that fails permanently lands in a dead-letter row rather than
+// vanishing. Preferences are opt-OUT per category, so a customer can silence renewal
+// reminders without losing the "you were paid" notification that they actually want.
+// ============================================================================
+
+enum DevicePlatform {
+  ANDROID
+  IOS
+}
+
+/// A registered push target. One row per (user, device token). A token is globally unique —
+/// it identifies a physical app install — and can migrate between users if a device is handed
+/// on, so registration upserts on the token, not on (user, token).
+model DeviceToken {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// The FCM registration token / APNs device token. Unique: the same install cannot be two rows.
+  token    String         @unique
+  platform DevicePlatform
+
+  /// Soft-disabled when a provider reports the token is dead (uninstalled, expired). A dead
+  /// token is kept, not deleted, so we do not keep re-registering and re-failing it.
+  isActive Boolean @default(true)
+
+  /// Refreshed on every registration ping, so a stale-token sweep has something to sort by.
+  lastSeenAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("device_tokens")
+}
+
+enum NotificationCategory {
+  DELIVERY_COMPLETED
+  PICKUP_CASHBACK
+  WITHDRAWAL_UPDATE
+  SUBSCRIPTION_RENEWAL
+  ORDER_STATUS
+  PICKUP_REMINDER
+}
+
+/// Per-category opt-out. The ABSENCE of a row means opted-IN — a new category is on by default
+/// and a user only ever stores the categories they have turned OFF. That keeps "notify unless
+/// told otherwise" the default without writing a row per user per category up front.
+model NotificationPreference {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  category NotificationCategory
+  enabled  Boolean
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// One preference row per user per category.
+  @@unique([userId, category])
+  @@map("notification_preferences")
+}
+
+enum NotificationStatus {
+  /// Enqueued, not yet sent.
+  QUEUED
+  /// Delivered to at least one of the user's devices by the provider.
+  SENT
+  /// Every retry was exhausted, or the failure was permanent. THE dead-letter state — an
+  /// operator can query these; nothing is silently dropped.
+  FAILED
+}
+
+/// The record of every notification we tried to send. It is the send log AND the dead-letter
+/// queue: a FAILED row with its lastError is how a permanently-failed push stays visible.
+model Notification {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  category NotificationCategory
+
+  title String
+  body  String
+  /// Structured payload for the app to act on (a deep link, an order id). Redacted of nothing
+  /// sensitive by construction — a push is delivered to a lock screen.
+  data  Json?
+
+  status    NotificationStatus @default(QUEUED)
+  /// How many send attempts have been made. For observability and the retry policy.
+  attempts  Int                @default(0)
+  /// The last provider error, kept on a FAILED row so a dead-letter is diagnosable.
+  lastError String?
+
+  sentAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@map("notifications")
 }

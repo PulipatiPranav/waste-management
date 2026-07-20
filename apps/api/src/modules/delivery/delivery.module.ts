@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 
 import { type Env } from '@/config/env.schema';
 import { AuthModule } from '@/modules/auth/auth.module';
+import { NotificationsModule } from '@/modules/notifications/notifications.module';
 import { PickupsModule } from '@/modules/pickups/pickups.module';
 import { UsersModule } from '@/modules/users/users.module';
 import {
@@ -37,6 +38,7 @@ import { PartnerDeliveryController } from './presentation/partner-delivery.contr
     // plans delivery runs and then slots pickups into them, because a pickup rides along
     // with the delivery round rather than getting its own dispatch.
     forwardRef(() => PickupsModule),
+    NotificationsModule,
 
     BullModule.forRootAsync({
       inject: [ConfigService],

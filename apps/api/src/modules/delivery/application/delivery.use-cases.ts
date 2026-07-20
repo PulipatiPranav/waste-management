@@ -3,6 +3,10 @@ import { ConfigService } from '@nestjs/config';
 
 import { type Env } from '@/config/env.schema';
 import { CLOCK, type Clock } from '@/modules/auth/domain/ports/clock.port';
+import {
+  NOTIFICATION_DISPATCHER,
+  type NotificationDispatcher,
+} from '@/modules/notifications/domain/ports/notification-dispatcher.port';
 import { USER_REPOSITORY, type UserRepository } from '@/modules/users/domain/ports/user.repository';
 import { Day } from '@/modules/subscriptions/domain/value-objects/day';
 import { ConflictError, ForbiddenError, NotFoundError } from '@/shared/domain/errors/domain.error';
@@ -95,6 +99,7 @@ export class PartnerDeliveryUseCases {
     @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
     @Inject(DELIVERY_EVENT_PUBLISHER) private readonly events: DeliveryEventPublisher,
     @Inject(CLOCK) private readonly clock: Clock,
+    @Inject(NOTIFICATION_DISPATCHER) private readonly notifications: NotificationDispatcher,
     private readonly config: ConfigService<Env, true>,
   ) {}
 
@@ -166,6 +171,21 @@ export class PartnerDeliveryUseCases {
       runStatus,
       at: now.toISOString(),
     });
+
+    // Notify the customer their paper arrived. Only on a successful delivery — a FAILED/SKIPPED
+    // stop is not good news to push. Fire-and-forget; the outcome above is already recorded.
+    if (updated.status === 'DELIVERED') {
+      const customerId = await this.delivery.findSubscriptionCustomerId(updated.subscriptionId);
+      if (customerId !== null) {
+        void this.notifications.dispatch({
+          userId: customerId,
+          category: 'DELIVERY_COMPLETED',
+          title: 'Paper delivered',
+          body: 'Your newspaper has been delivered.',
+          data: { type: 'delivery_completed', stopId: updated.id },
+        });
+      }
+    }
 
     return updated;
   }

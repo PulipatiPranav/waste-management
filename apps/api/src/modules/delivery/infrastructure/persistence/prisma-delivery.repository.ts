@@ -190,6 +190,14 @@ export class PrismaDeliveryRepository implements DeliveryRepository {
     return { ...this.toStop(row), partnerId: row.run.partnerId };
   }
 
+  async findSubscriptionCustomerId(subscriptionId: string): Promise<string | null> {
+    const row = await this.prisma.subscription.findUnique({
+      where: { id: subscriptionId },
+      select: { userId: true },
+    });
+    return row?.userId ?? null;
+  }
+
   /**
    * Conditional update: record the outcome only while the stop is still PENDING.
    *

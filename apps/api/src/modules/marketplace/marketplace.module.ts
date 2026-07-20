@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 import { type Env } from '@/config/env.schema';
 import { AuthModule } from '@/modules/auth/auth.module';
+import { NotificationsModule } from '@/modules/notifications/notifications.module';
 import { WalletModule } from '@/modules/wallet/wallet.module';
 import { MarketplaceUseCases } from './application/marketplace.use-cases';
 import { MARKETPLACE_REPOSITORY } from './domain/ports/marketplace.repository';
@@ -18,7 +19,7 @@ import { PaymentWebhookController } from './presentation/payment-webhook.control
   // WalletModule exports WalletLedgerWriter so order confirmation can debit the wallet inside
   // its own transaction — the one place the marketplace reaches into the money core, and it
   // does so through the shared ledger primitive rather than reimplementing a debit.
-  imports: [AuthModule, WalletModule],
+  imports: [AuthModule, WalletModule, NotificationsModule],
   controllers: [MarketplaceController, AdminMarketplaceController, PaymentWebhookController],
   providers: [
     { provide: MARKETPLACE_REPOSITORY, useClass: PrismaMarketplaceRepository },

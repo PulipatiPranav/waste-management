@@ -1,6 +1,7 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 
+import { NotificationsModule } from '@/modules/notifications/notifications.module';
 import { WalletUseCases } from './application/wallet.use-cases';
 import { WALLET_REPOSITORY } from './domain/ports/wallet.repository';
 import {
@@ -14,7 +15,7 @@ import { AdminWalletController, WalletController } from './presentation/wallet.c
 
 @Module({
   // BullModule.forRoot is registered once by DeliveryModule; registerQueue attaches to it.
-  imports: [BullModule.registerQueue({ name: WALLET_MAINTENANCE_QUEUE })],
+  imports: [BullModule.registerQueue({ name: WALLET_MAINTENANCE_QUEUE }), NotificationsModule],
   controllers: [WalletController, AdminWalletController],
   providers: [
     WalletLedgerWriter,

@@ -1049,6 +1049,95 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/notifications/devices': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Register this device for push
+     * @description Idempotent: re-registering the same token refreshes it rather than duplicating.
+     */
+    post: operations['NotificationsController_registerDevice_v1'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications/devices/unregister': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Forget a device (sign-out on that device) */
+    post: operations['NotificationsController_unregisterDevice_v1'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications/preferences': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** My notification preferences (every category, on unless opted out) */
+    get: operations['NotificationsController_getPreferences_v1'];
+    put?: never;
+    /** Opt in or out of a category */
+    post: operations['NotificationsController_setPreference_v1'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/notifications': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** My recent notifications */
+    get: operations['NotificationsController_listMine_v1'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/admin/notifications/dead-letters': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Notifications that permanently failed to send */
+    get: operations['AdminNotificationsController_deadLetters_v1'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/admin/recycling/partners': {
     parameters: {
       query?: never;
@@ -2582,6 +2671,64 @@ export interface components {
        * @example Goodwill credit for pickup #123 where the scale under-read by 2 kg (ticket OPS-451).
        */
       note: string;
+    };
+    RegisterDeviceDto: {
+      /** @description FCM registration token / APNs device token */
+      token: string;
+      /** @enum {string} */
+      platform: 'ANDROID' | 'IOS';
+    };
+    DeviceTokenDto: {
+      token: string;
+      /** @enum {string} */
+      platform: 'ANDROID' | 'IOS';
+    };
+    UnregisterDeviceDto: {
+      token: string;
+    };
+    PreferenceDto: {
+      /** @enum {string} */
+      category:
+        | 'DELIVERY_COMPLETED'
+        | 'PICKUP_CASHBACK'
+        | 'WITHDRAWAL_UPDATE'
+        | 'SUBSCRIPTION_RENEWAL'
+        | 'ORDER_STATUS'
+        | 'PICKUP_REMINDER';
+      label: string;
+      enabled: boolean;
+    };
+    SetPreferenceDto: {
+      /** @enum {string} */
+      category:
+        | 'DELIVERY_COMPLETED'
+        | 'PICKUP_CASHBACK'
+        | 'WITHDRAWAL_UPDATE'
+        | 'SUBSCRIPTION_RENEWAL'
+        | 'ORDER_STATUS'
+        | 'PICKUP_REMINDER';
+      /** @description false = opt out of this category */
+      enabled: boolean;
+    };
+    NotificationDto: {
+      id: string;
+      /** @enum {string} */
+      category:
+        | 'DELIVERY_COMPLETED'
+        | 'PICKUP_CASHBACK'
+        | 'WITHDRAWAL_UPDATE'
+        | 'SUBSCRIPTION_RENEWAL'
+        | 'ORDER_STATUS'
+        | 'PICKUP_REMINDER';
+      title: string;
+      body: string;
+      data: Record<string, never> | null;
+      /** @enum {string} */
+      status: 'QUEUED' | 'SENT' | 'FAILED';
+      attempts: number;
+      lastError: string | null;
+      sentAt: string | null;
+      createdAt: string;
     };
     BatchDto: {
       /** Format: uuid */
@@ -4910,6 +5057,139 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+      /** @description Requires OPS_STAFF or SUPER_ADMIN. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  NotificationsController_registerDevice_v1: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['RegisterDeviceDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['DeviceTokenDto'];
+        };
+      };
+    };
+  };
+  NotificationsController_unregisterDevice_v1: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['UnregisterDeviceDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  NotificationsController_getPreferences_v1: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PreferenceDto'][];
+        };
+      };
+    };
+  };
+  NotificationsController_setPreference_v1: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SetPreferenceDto'];
+      };
+    };
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PreferenceDto'][];
+        };
+      };
+    };
+  };
+  NotificationsController_listMine_v1: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['NotificationDto'][];
+        };
+      };
+    };
+  };
+  AdminNotificationsController_deadLetters_v1: {
+    parameters: {
+      query: {
+        limit: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['NotificationDto'][];
+        };
       };
       /** @description Requires OPS_STAFF or SUPER_ADMIN. */
       403: {

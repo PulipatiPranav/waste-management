@@ -47,16 +47,22 @@ describe('Audit log (e2e, real Postgres)', () => {
 
   let seq = 0;
 
+  // A per-RUN unique client IP (suffix varies each run), so the OTP per-IP rate limiter does not
+  // accumulate across back-to-back runs the way a fixed IP would.
+  const ipFor = (n: number): string =>
+    `10.${(Number(suffix) % 200) + 1}.${(Math.floor(n / 250) % 250) + 1}.${(n % 250) + 1}`;
+
   const login = async (
     role?: 'SUPER_ADMIN' | 'OPS_STAFF',
   ): Promise<{ token: string; userId: string }> => {
     seq += 1;
+    const ip = ipFor(seq);
     const localPhone = `94${suffix}${String(seq).padStart(2, '0')}`;
     const phone = `+91${localPhone}`;
 
     await request(app.getHttpServer())
       .post('/api/v1/auth/otp/request')
-      .set('X-Forwarded-For', `198.51.99.${seq}`)
+      .set('X-Forwarded-For', ip)
       .send({ phone: localPhone })
       .expect(200);
 
@@ -66,6 +72,7 @@ describe('Audit log (e2e, real Postgres)', () => {
 
     const session = await request(app.getHttpServer())
       .post('/api/v1/auth/otp/verify')
+      .set('X-Forwarded-For', ip)
       .send({ phone: localPhone, code })
       .expect(200);
 

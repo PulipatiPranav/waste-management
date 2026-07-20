@@ -3,6 +3,7 @@ import { forwardRef, Module } from '@nestjs/common';
 import { AddressesModule } from '@/modules/addresses/addresses.module';
 import { AuthModule } from '@/modules/auth/auth.module';
 import { DeliveryModule } from '@/modules/delivery/delivery.module';
+import { NotificationsModule } from '@/modules/notifications/notifications.module';
 import { WalletModule } from '@/modules/wallet/wallet.module';
 import { AssignPickupsToRunsUseCase } from './application/assign-pickups.use-case';
 import { PickupUseCases } from './application/pickup.use-cases';
@@ -23,6 +24,7 @@ import { PartnerPickupsController, PickupsController } from './presentation/pick
     // delivery round). Inventing a shared "logistics" module to break the cycle would be a
     // bigger lie about the domain than the cycle is.
     forwardRef(() => DeliveryModule),
+    NotificationsModule,
     AuthModule,
   ],
   controllers: [PickupsController, PartnerPickupsController, AdminRatesController],

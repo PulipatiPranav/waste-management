@@ -204,6 +204,42 @@ export const envSchema = z.object({
   /** Razorpay API credentials. Required only when PAYMENT_GATEWAY_PROVIDER=razorpay. */
   RAZORPAY_KEY_ID: z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
+
+  // --- Push notifications (Phase 10) ----------------------------------------
+
+  /**
+   * Which push backend to use. `fcm` routes Android via Firebase and iOS via APNs behind one
+   * interface; `fake` is a deterministic in-process provider for dev and tests that records
+   * sends and can be told to fail on command (to exercise retry/backoff and dead-lettering)
+   * without a device or a network. `fake` is REFUSED in production — a notification that
+   * "sends" nowhere is worse than one that errors loudly.
+   */
+  PUSH_PROVIDER: z.enum(['fake', 'fcm']).default('fake'),
+
+  /** Whether the notification queue's workers/schedulers run in this process. Off in tests. */
+  NOTIFICATIONS_ENABLED: z
+    .string()
+    .default('true')
+    .transform((value) => value === 'true'),
+
+  /** Firebase service-account JSON (as a string) for FCM. Required when PUSH_PROVIDER=fcm. */
+  FCM_SERVICE_ACCOUNT_JSON: z.string().optional(),
+
+  /** APNs credentials for iOS. Required when PUSH_PROVIDER=fcm and iOS devices are in play. */
+  APNS_KEY_ID: z.string().optional(),
+  APNS_TEAM_ID: z.string().optional(),
+  APNS_BUNDLE_ID: z.string().optional(),
+  APNS_PRIVATE_KEY: z.string().optional(),
+
+  /**
+   * When the renewal-reminder and pickup-reminder scans run, as cron expressions. 09:00 and
+   * 08:00 by default — morning, when a customer can act on the reminder the same day.
+   */
+  NOTIFICATION_RENEWAL_REMINDER_CRON: z.string().default('0 9 * * *'),
+  NOTIFICATION_PICKUP_REMINDER_CRON: z.string().default('0 8 * * *'),
+
+  /** How many days before a subscription's next billing to send the renewal reminder. */
+  RENEWAL_REMINDER_LEAD_DAYS: z.coerce.number().int().positive().max(30).default(3),
 });
 
 /**
@@ -247,6 +283,24 @@ export const envSchemaWithRules = envSchema.superRefine((env, ctx) => {
       message:
         'The fake payment gateway cannot be used in production: orders would confirm without any ' +
         'money moving. Set PAYMENT_GATEWAY_PROVIDER=razorpay and provide the Razorpay credentials.',
+    });
+  }
+
+  if (env.NODE_ENV === 'production' && env.PUSH_PROVIDER === 'fake') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['PUSH_PROVIDER'],
+      message:
+        'The fake push provider cannot be used in production: notifications would send nowhere. ' +
+        'Set PUSH_PROVIDER=fcm and provide FCM_SERVICE_ACCOUNT_JSON (and APNs credentials for iOS).',
+    });
+  }
+
+  if (env.PUSH_PROVIDER === 'fcm' && env.FCM_SERVICE_ACCOUNT_JSON === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['FCM_SERVICE_ACCOUNT_JSON'],
+      message: 'FCM_SERVICE_ACCOUNT_JSON is required when PUSH_PROVIDER=fcm.',
     });
   }
 

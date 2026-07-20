@@ -3,6 +3,10 @@ import { ConfigService } from '@nestjs/config';
 
 import { type Env } from '@/config/env.schema';
 import {
+  NOTIFICATION_DISPATCHER,
+  type NotificationDispatcher,
+} from '@/modules/notifications/domain/ports/notification-dispatcher.port';
+import {
   ConflictError,
   NotFoundError,
   UnauthorizedDomainError,
@@ -43,6 +47,7 @@ export class MarketplaceUseCases {
   constructor(
     @Inject(MARKETPLACE_REPOSITORY) private readonly repo: MarketplaceRepository,
     @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGateway,
+    @Inject(NOTIFICATION_DISPATCHER) private readonly notifications: NotificationDispatcher,
     private readonly config: ConfigService<Env, true>,
   ) {
     this.currency = this.config.get('PAYMENT_CURRENCY', { infer: true });
@@ -215,6 +220,7 @@ export class MarketplaceUseCases {
         actorUserId: input.userId,
       });
       const confirmed = await this.settleWalletOnlyOutcome(outcome);
+      if (confirmed.status === 'CONFIRMED') this.notifyOrderStatus(confirmed);
       return { order: confirmed, gateway: null };
     }
 
@@ -320,6 +326,7 @@ export class MarketplaceUseCases {
 
     switch (outcome.status) {
       case 'CONFIRMED':
+        this.notifyOrderStatus(outcome.order);
         return { outcome: 'confirmed', orderId: outcome.order.id };
       case 'ALREADY_RESOLVED':
         return { outcome: 'already_processed', orderId: outcome.order.id };
@@ -387,7 +394,30 @@ export class MarketplaceUseCases {
       throw new ConflictError('Unsupported fulfilment transition.');
     }
 
-    return this.repo.setOrderFulfilmentStatus({ orderId: input.orderId, nextStatus });
+    const updated = await this.repo.setOrderFulfilmentStatus({
+      orderId: input.orderId,
+      nextStatus,
+    });
+    this.notifyOrderStatus(updated);
+    return updated;
+  }
+
+  /** Fire-and-forget push on an order status change. Never blocks or fails the order flow. */
+  private notifyOrderStatus(order: OrderRecord): void {
+    const bodies: Record<string, string> = {
+      CONFIRMED: 'Your order is confirmed and being prepared.',
+      SHIPPED: 'Your order is on its way.',
+      DELIVERED: 'Your order has been delivered.',
+      CANCELLED: 'Your order was cancelled and any payment refunded.',
+      FAILED: 'Your order could not be completed and any payment was refunded.',
+    };
+    void this.notifications.dispatch({
+      userId: order.userId,
+      category: 'ORDER_STATUS',
+      title: 'Order update',
+      body: bodies[order.status] ?? `Your order is now ${order.status}.`,
+      data: { type: 'order_status', orderId: order.id, status: order.status },
+    });
   }
 }
 
