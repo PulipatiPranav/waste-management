@@ -60,3 +60,7 @@ pnpm-debug.log*
 
 # local dev object storage (delivery proof photos)
 .storage/
+
+# OpenAPI intermediate — regenerable from the app; the committed source of truth is
+# packages/shared-types/src/generated/api.ts
+apps/api/openapi.json

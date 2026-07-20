@@ -25,6 +25,6 @@
   // `prisma/` is included so the seed script is typechecked and linted like everything
   // else. It was not, and a seed that only breaks when you run it is a seed that breaks
   // in front of whoever you are demoing to.
-  "include": ["src/**/*.ts", "test/**/*.ts", "prisma/**/*.ts"],
+  "include": ["src/**/*.ts", "test/**/*.ts", "prisma/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

@@ -3,11 +3,11 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 8 — marketplace.** The loop closes: recycled-paper goods are sold back to
-> customers, paid for partly with the wallet balance they earned recycling and partly by card,
-> with order confirmation atomic across inventory, wallet, and gateway. Standard e-commerce
-> flow (browse → cart → checkout → webhook → fulfilment), oversell-safe under concurrency,
-> idempotent against duplicate webhooks.
+> **Status: Phase 9 — ops console.** The internal staff dashboard (`apps/admin`, Next.js) now
+> consumes the API: staff login with role-gated navigation, a live delivery feed over the Phase 3
+> WebSocket, wallet-ledger oversight ("why does this wallet say ₹X?"), chain-of-custody, org and
+> marketplace management, and an audit trail. Admin & API stay type-synced via OpenAPI-generated
+> types, and a global interceptor writes an audit row for every mutating staff action.
 >
 > ⚠️ **Read [Regulatory: the wallet is not a licensed instrument](#regulatory-the-wallet-is-not-a-licensed-instrument) before piloting with real money.**
 >
@@ -797,12 +797,70 @@ compare before anything is parsed. Sellers are verified through the **same
 `PENDING → VERIFIED → SUSPENDED` lifecycle as recycling partners** (`shared/domain/partner-verification`),
 not a bespoke per-partner-type flow — only a verified seller's products can go live.
 
+## Ops console (Phase 9)
+
+`apps/admin` is the internal staff dashboard (Next.js App Router, React 19, TanStack Query). It is
+a pure consumer of the Phase 1–8 APIs — it adds no business logic of its own — and it exists so
+support, ops and finance have one place to answer the questions the platform generates.
+
+**Screens:** overview, live delivery runs, wallet oversight, recycling & chain-of-custody, org
+accounts, marketplace/sellers, sustainability, and the audit log. Every screen is gated to the
+roles the backend allows on the endpoints behind it — the nav hides what a role cannot reach, and
+the API enforces the same roles on every call, so the gating is convenience, not the control.
+
+### Admin and API cannot drift out of type sync
+
+The admin's request/response types are **generated from the API's OpenAPI spec**
+(`@nestjs/swagger` → `openapi-typescript`) into `@cpe/shared-types` and imported everywhere the
+console touches the wire. `pnpm --filter @cpe/api gen:types` boots the app, emits the spec, and
+regenerates the committed types; rename a field in a NestJS DTO without updating a consumer and the
+**admin build fails**, rather than a support agent hitting a runtime surprise mid-incident.
+
+### The two support workflows the brief singled out
+
+- **"Why does this wallet say ₹X?"** — look up a customer by id and see the cached balance, the
+  append-only ledger that produced it, **and a live reconciliation of the two**. Showing the
+  reconciliation next to the balance is the point: it answers not just _what_ the balance is but
+  _whether it can be trusted_ — an unreconciled wallet (a write that escaped the row lock) shows in
+  red rather than being discovered later.
+- **Reassigning a delivery run** — when a rider calls in sick mid-morning, reassign their run to a
+  partner who can actually take it. The candidate list is filtered to verified, active, available,
+  in-zone partners (offering an ineligible one just means the backend rejects it after the agent
+  has told the customer it's sorted). Both workflows have component tests (Vitest + Testing
+  Library) that assert the queries fire, the eligibility filter holds, and the mutation is sent.
+
+### Live delivery feed
+
+The delivery screen subscribes to the Phase 3 gateway (`/delivery` namespace) for a real-time tail
+of stop-status changes. The access token goes in the socket handshake `auth` payload — never the
+query string, which proxies and browser history log — matching how the gateway authenticates; only
+staff sockets are admitted to the admin room.
+
+### Audit log — one interceptor, not N controllers
+
+A new `AuditLog` model records **who did what, to what, when**, written by a single global
+interceptor. Scope is deliberate: only **mutations** (POST/PUT/PATCH/DELETE), only **staff/admin**
+roles (a customer editing their own cart is not an admin action), only on **success**. The one
+admin route a developer forgets to log by hand is exactly the action a reviewer later needs — doing
+it in an interceptor means a new admin endpoint is audited the moment it exists, for free. Request
+bodies are **redacted** before storage (passwords, tokens, OTP codes, bank details stripped by key
+name) — an audit log that leaks credentials is a liability, not a control — and the write is
+best-effort and off the response's critical path, so a broken audit pipeline can never turn a
+committed admin action into a 500. The trail is readable at `/admin/audit`, filterable by actor,
+action and target, and gated to OPS_STAFF/SUPER_ADMIN because the log of who-did-what is itself
+sensitive.
+
+> **Note on session storage.** The console keeps its tokens in `localStorage` — a reasonable trade
+> for an internal, staff-only tool over TLS (survives refresh, no CSRF dance), and called out as
+> deliberate rather than accidental. A public consumer app should prefer an httpOnly cookie.
+
 ## Production readiness
 
 **This is a working, well-tested pilot build — not a production deployment.** The core loop
 (subscribe → deliver → pick up → weigh → pay → batch → recycle → trace → sell) runs end to end,
-with 328 unit and 160 e2e tests against real Postgres and Redis. But the build plan puts real
-production hardening in Phases 14–15 (observability, OWASP pass, load testing, k8s, secrets,
+with 336 unit and 164 e2e tests against real Postgres and Redis on the API, plus an ops console
+(`apps/admin`) with component tests for the critical support workflows. But the build plan puts
+real production hardening in Phases 14–15 (observability, OWASP pass, load testing, k8s, secrets,
 CI/CD to a cluster), and this pass does **not** short-circuit those. What that means concretely:
 
 **Ready:**

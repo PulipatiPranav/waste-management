@@ -22,7 +22,9 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "prisma:validate": "prisma validate",
-    "db:seed": "prisma db seed"
+    "db:seed": "prisma db seed",
+    "openapi:json": "ts-node -r tsconfig-paths/register scripts/generate-openapi.ts",
+    "gen:types": "pnpm openapi:json && pnpm --filter @cpe/shared-types exec openapi-typescript ../../apps/api/openapi.json -o ./src/generated/api.ts"
   },
   "dependencies": {
     "@cpe/shared-types": "workspace:*",

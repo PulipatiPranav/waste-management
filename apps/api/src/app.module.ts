@@ -3,6 +3,7 @@ import { APP_INTERCEPTOR } from '@nestjs/core';
 
 import { ConfigModule } from './config/config.module';
 import { AddressesModule } from './modules/addresses/addresses.module';
+import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { DeliveryModule } from './modules/delivery/delivery.module';
@@ -45,6 +46,7 @@ import { CorrelationIdMiddleware } from './shared/presentation/middleware/correl
     ImpactModule,
     OrgsModule,
     MarketplaceModule,
+    AuditModule,
     HealthModule,
   ],
   providers: [

@@ -22,6 +22,9 @@ export default tseslint.config(
       '**/*.config.mjs',
       '**/*.config.js',
       '**/next-env.d.ts',
+      // Auto-generated from the API's OpenAPI spec by `pnpm --filter @cpe/api gen:types`;
+      // its shape is the tool's, not ours to lint or hand-edit.
+      'packages/shared-types/src/generated/**',
     ],
   },
 
@@ -107,10 +110,10 @@ export default tseslint.config(
   },
 
   {
-    // Standalone CLI scripts (the Prisma seed). These are run by a human at a terminal,
-    // where printing to stdout is the entire point — unlike the server, which uses the
-    // structured Nest logger so that log lines are parseable in an aggregator.
-    files: ['apps/api/prisma/**/*.ts'],
+    // Standalone CLI scripts (the Prisma seed, the OpenAPI generator). These are run by a
+    // human at a terminal, where printing to stdout is the entire point — unlike the server,
+    // which uses the structured Nest logger so that log lines are parseable in an aggregator.
+    files: ['apps/api/prisma/**/*.ts', 'apps/api/scripts/**/*.ts'],
     rules: {
       'no-console': 'off',
     },

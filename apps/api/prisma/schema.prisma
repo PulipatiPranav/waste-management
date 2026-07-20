@@ -81,6 +81,7 @@ model User {
   orgMemberships  OrgMember[]
   cart            Cart?
   orders          Order[]
+  auditLogs       AuditLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1719,4 +1720,61 @@ model WebhookEvent {
 
   @@unique([provider, eventId])
   @@map("webhook_events")
+}
+
+// ============================================================================
+// PHASE 9 — Audit log
+//
+// Every mutating action taken by a staff member is recorded here, once, by a single global
+// interceptor rather than by each controller remembering to log. "Who did what, to what, when"
+// is the question a support lead, a finance reviewer, and an incident responder all ask, and a
+// financial platform that cannot answer it is one disputed adjustment away from having no
+// answer at all. Append-only in spirit (there is no update path in the app); the row is the
+// record of the action, written after the action succeeds.
+// ============================================================================
+
+model AuditLog {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// The staff member who took the action. Cascade: in this system a user is soft-disabled
+  /// (isActive = false), never hard-deleted — a real erasure (GDPR, offboarding) is meant to
+  /// take that person's actor-rows with them, and Restrict would instead make the user
+  /// undeletable forever. Everyone else's trail is untouched.
+  actorUserId String @db.Uuid
+  actor       User   @relation(fields: [actorUserId], references: [id], onDelete: Cascade)
+
+  /// Snapshotted at write time so the log reads correctly even if the actor's role later
+  /// changes — the trail records what they were WHEN they acted.
+  actorRole Role
+
+  /// A stable, greppable identifier for the action, e.g. "POST /admin/wallet/adjustments".
+  /// Derived from the matched route, not the concrete URL, so it groups across targets.
+  action String
+  method String
+  /// The concrete request path, including ids — the specific thing that was touched.
+  path   String
+
+  /// The kind and id of the primary entity acted on, lifted from the route params where one is
+  /// identifiable (a wallet's userId, an order's id). Both null for collection-level actions.
+  targetType String?
+  targetId   String? @db.Uuid
+
+  /// The HTTP status the action returned. Only 2xx actions are recorded — a rejected action
+  /// changed nothing — but the exact code is kept.
+  statusCode Int
+
+  /// A REDACTED summary of the request (route params + a scrubbed body). Secrets, tokens,
+  /// OTP codes and bank details are stripped before anything is written — an audit log that
+  /// leaks credentials is a liability, not a control.
+  metadata Json?
+
+  ip String?
+
+  createdAt DateTime @default(now())
+
+  @@index([actorUserId, createdAt])
+  @@index([action])
+  @@index([targetId])
+  @@index([createdAt])
+  @@map("audit_logs")
 }
