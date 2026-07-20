@@ -3,11 +3,11 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 10 — push notifications.** Delivery, pickup+cashback, withdrawal, order and
-> reminder events now notify the customer via FCM/APNs behind one `NotificationProvider`, sent off
-> a BullMQ queue with retry/backoff and a dead-letter log — a push that permanently fails is
-> recorded, never silently dropped. Preferences are per-category opt-out, and notifying a customer
-> can never fail the money-moving action that triggered it.
+> **Status: Phase 11 — Flutter app foundation.** The mobile app (`apps/mobile`) now has its auth
+> spine: OTP login, tokens in the OS keystore, a Dio interceptor that refreshes-and-retries on a
+> 401, GoRouter guards (one app, role-based navigation for customer vs delivery partner), an
+> offline cache with an explicit cached-vs-live policy, and a shared design system built before
+> the feature screens. Widget + interceptor tests cover the flow. Feature screens land next.
 >
 > ⚠️ **Read [Regulatory: the wallet is not a licensed instrument](#regulatory-the-wallet-is-not-a-licensed-instrument) before piloting with real money.**
 >
@@ -904,6 +904,66 @@ The renewal and pickup reminders are daily BullMQ scans. The renewal one fires o
 subscription is **exactly** the configured lead-days from renewal (not `<=`), so a customer gets
 one reminder per cycle, not a nag every morning of the last three days — no dedup table needed
 (`renewal-schedule.ts`, pure, handles month-length clamping and is unit-tested).
+
+## Mobile app foundation (Phase 11)
+
+`apps/mobile` is the Flutter app for **customers and delivery partners** — ONE app with
+role-based navigation, not two. (The build plan flagged this as a choice; a separate partner app
+is common, but one app with a role guard is simpler to ship and keeps a single auth/design spine.
+The role split is one `redirect` rule, so carving out a separate partner app later is a small
+change, not a rewrite.) Phase 11 is the foundation the feature screens (Phase 12+) hang on.
+
+### Auth spine
+
+- **OTP login** (`/login` → `/otp`), wired to the Phase 1 auth API. The screens are non-oracles:
+  the "code sent" message is identical whether or not the number is registered, matching the API.
+- **Tokens in the OS keystore** via `flutter_secure_storage`, never `SharedPreferences` (which is a
+  plaintext file any backup or rooted device can read). Behind a `TokenStore` interface, so tests
+  use an in-memory fake instead of a platform channel that does not exist under `flutter test`.
+- **A Dio interceptor that recovers from a 401**: attach the access token, and on a 401 refresh
+  once and replay the original request. Two details shape it — the client uses
+  `validateStatus: <500`, so a 401 is a _response_ not an exception (handled in `onResponse`); and
+  refresh is **single-flight**, so a burst of five simultaneously-expired requests triggers one
+  refresh, not five that race and log the user out. Unit-tested against a scripted Dio adapter:
+  refresh+retry, refresh-failure clears the session and signals logout, single-flight, no
+  double-retry.
+- **`AuthController`** holds a sealed `AuthState` (`unknown` / `unauthenticated` /
+  `authenticated`). `unknown` is load-bearing: on cold start the router shows a splash and
+  redirects nowhere until the stored token is checked, so a returning user never flashes past the
+  login screen. When the interceptor's refresh fails deep in a request, it raises a core-level
+  session-revoked signal that flips the state to unauthenticated and the router reacts.
+
+### Router guards — one place, not many
+
+The GoRouter `redirect` is the single auth gate: unknown → splash, unauthenticated → login,
+authenticated → the role's home (`/partner` for a delivery partner, `/home` for everyone else),
+with `/partner` guarded so a customer cannot reach it. `refreshListenable` is fed by a provider
+_listener_ (not a watch), so an auth change re-runs the redirect without rebuilding the router and
+dropping the navigation stack.
+
+### Offline cache — cached vs always-live is a decision, not a default
+
+A Drift-backed `LocalCache` (JSON + TTL) with an explicit per-domain policy
+(`core/database/local_cache.dart`):
+
+- **Always live, never cached:** the wallet balance. A stale balance is worse than a spinner — a
+  customer who sees ₹500 that is really ₹0 files a complaint.
+- **Offline-first, cached with a TTL:** delivery/pickup history, the newspaper catalogue, and the
+  signed-in profile. A delivery partner works a whole route with no signal, and the profile cache
+  is what lets the app restore an authenticated session offline instead of bouncing to login.
+
+### Design system before feature screens
+
+Theme (Material 3 from a recycled-paper green seed), a typography scale named by role, spacing and
+radii tokens, and a shared widget library — `AppButton` (with a built-in loading state, because a
+button that stays tappable mid-request is how a customer double-submits), `AppCard`, `EmptyState`
+(with an `.offline()` variant), `Skeleton`, and an `AsyncValueView` that renders loading/error
+consistently. Built first, deliberately, so Phase 12's screens reach for these instead of each
+inventing their own button padding.
+
+> **Toolchain note.** Generated files (`*.g.dart`, `*.freezed.dart`) are not committed — run
+> `dart run build_runner build` after checkout. The app is a Flutter package outside the pnpm
+> workspace; its gate is `flutter analyze` (zero issues) + `flutter test`.
 
 ## Production readiness
 
