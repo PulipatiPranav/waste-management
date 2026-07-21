@@ -6,7 +6,7 @@ import '../../features/auth/domain/auth_state.dart';
 import '../../features/auth/presentation/auth_controller.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/otp_screen.dart';
-import '../../features/shell/presentation/customer_home_screen.dart';
+import '../../features/shell/presentation/customer_shell.dart';
 import '../../features/shell/presentation/partner_home_screen.dart';
 import '../../features/shell/presentation/splash_screen.dart';
 
@@ -81,11 +81,7 @@ GoRouter appRouter(Ref ref) {
         name: 'otp',
         builder: (context, state) => OtpScreen(phone: state.uri.queryParameters['phone'] ?? ''),
       ),
-      GoRoute(
-        path: Routes.home,
-        name: 'home',
-        builder: (context, state) => const CustomerHomeScreen(),
-      ),
+      GoRoute(path: Routes.home, name: 'home', builder: (context, state) => const CustomerShell()),
       GoRoute(
         path: Routes.partner,
         name: 'partner',

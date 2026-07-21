@@ -3,11 +3,11 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 11 — Flutter app foundation.** The mobile app (`apps/mobile`) now has its auth
-> spine: OTP login, tokens in the OS keystore, a Dio interceptor that refreshes-and-retries on a
-> 401, GoRouter guards (one app, role-based navigation for customer vs delivery partner), an
-> offline cache with an explicit cached-vs-live policy, and a shared design system built before
-> the feature screens. Widget + interceptor tests cover the flow. Feature screens land next.
+> **Status: Phase 12 — customer screens.** The mobile app now has its core customer surface: browse
+> & subscribe to newspapers, manage subscriptions (pause/resume/cancel/change address), schedule
+> pickups with a scannable QR, the wallet (balance + ledger + withdrawal), an honestly-framed
+> impact dashboard, and the marketplace (browse/cart/checkout/orders) — all in a five-tab shell,
+> every screen with explicit loading/empty/error states from the Phase 11 design system.
 >
 > ⚠️ **Read [Regulatory: the wallet is not a licensed instrument](#regulatory-the-wallet-is-not-a-licensed-instrument) before piloting with real money.**
 >
@@ -964,6 +964,36 @@ inventing their own button padding.
 > **Toolchain note.** Generated files (`*.g.dart`, `*.freezed.dart`) are not committed — run
 > `dart run build_runner build` after checkout. The app is a Flutter package outside the pnpm
 > workspace; its gate is `flutter analyze` (zero issues) + `flutter test`.
+
+## Customer app screens (Phase 12)
+
+The core customer surface, in a five-tab shell (Papers · Pickups · Wallet · Shop · Impact). Every
+screen is a vertical slice — DTOs (freezed/json), a repository returning the app's `(value?,
+failure?)` record, a Riverpod provider, and a screen — and every one renders loading, empty and
+error states through the Phase 11 `AsyncValueView` rather than a bare spinner. That is the whole
+point of building the design system first: the states come for free and look the same everywhere.
+
+- **Newspapers & subscriptions** — browse subscribable editions (filter by pincode, which is how
+  availability actually works), subscribe with a chosen frequency/billing/address, and manage a
+  subscription (pause, resume, cancel-with-confirmation, change address).
+- **Pickups** — schedule a pickup (address + date + time window), see history, and — the piece the
+  field flow depends on — a **QR code** the delivery partner scans at the door. It is pinned
+  black-on-white regardless of theme, because a dark-mode QR on a dark background does not scan.
+- **Wallet** — balance, the append-only ledger, and a withdrawal request. The wallet is
+  **always live, never cached** (a stale balance is worse than a spinner); withdrawals send an
+  `Idempotency-Key`, and the copy is honest that the money leaves immediately and a rejection is
+  refunded.
+- **Impact** — the personal sustainability dashboard, and the one screen where copy is a
+  correctness concern: measured figures (recycled/landfill-diverted weight) are labelled plainly,
+  estimated figures (CO₂e, water, energy, trees) carry the word **"estimated"**, and the server's
+  disclaimer is shown **verbatim**. No "carbon negative"/"net zero" claim appears anywhere — the
+  app never asserts what the backend's methodology does not support.
+- **Marketplace** — browse recycled-paper goods, add to a cart, and check out paying from the
+  wallet (with the honest caveat that in-app card payment for any remaining balance is a later
+  step), plus order history.
+
+Widget tests cover the three flows the brief named — **subscribe, schedule pickup, view wallet** —
+each driving the real screen against a fake repository and asserting the request that goes out.
 
 ## Production readiness
 

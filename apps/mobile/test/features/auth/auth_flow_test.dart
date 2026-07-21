@@ -1,6 +1,10 @@
+import 'dart:typed_data';
+
 import 'package:cpe_mobile/core/database/app_database.dart';
+import 'package:cpe_mobile/core/network/dio_client.dart';
 import 'package:cpe_mobile/core/storage/token_store.dart';
 import 'package:cpe_mobile/features/auth/data/auth_repository_impl.dart';
+import 'package:dio/dio.dart';
 import 'package:cpe_mobile/features/auth/domain/auth_repository.dart';
 import 'package:cpe_mobile/features/auth/domain/auth_user.dart';
 import 'package:cpe_mobile/features/auth/domain/session.dart';
@@ -57,6 +61,21 @@ class _FakeAuthRepository implements AuthRepository {
   Future<void> logout() async {}
 }
 
+/// An adapter that answers every request instantly (503), so the shell's feature tabs resolve to
+/// an error state at once rather than making a real network call that would leave a pending timer
+/// at test teardown. The auth flow itself uses the fake repository, not Dio.
+class _OfflineAdapter implements HttpClientAdapter {
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async => ResponseBody.fromString('{}', 503);
+
+  @override
+  void close({bool force = false}) {}
+}
+
 Widget _app(AuthUser user) {
   return ProviderScope(
     overrides: [
@@ -65,6 +84,7 @@ Widget _app(AuthUser user) {
         ref.onDispose(db.close); // close it with the container, so the next test starts clean
         return db;
       }),
+      dioProvider.overrideWith((ref) => Dio()..httpClientAdapter = _OfflineAdapter()),
       tokenStoreProvider.overrideWithValue(_FakeTokenStore()),
       authRepositoryProvider.overrideWithValue(_FakeAuthRepository(user)),
     ],
@@ -97,11 +117,12 @@ void main() {
     expect(find.text('Enter code'), findsOneWidget);
     await tester.enterText(find.byType(TextFormField), '123456');
     await tester.tap(find.widgetWithText(FilledButton, 'Verify'));
-    await tester.pumpAndSettle();
+    await tester.pump(); // let the auth state flip
+    await tester.pump(const Duration(milliseconds: 100)); // and the redirect settle
 
-    // Authenticated -> the router redirect drops us on the CUSTOMER home.
-    expect(find.text('Hello, Asha'), findsOneWidget);
-    expect(find.text('Circular Paper'), findsOneWidget);
+    // Authenticated -> the router redirect drops us on the CUSTOMER shell (Papers tab + bottom nav).
+    expect(find.text('My papers'), findsOneWidget);
+    expect(find.byType(NavigationBar), findsOneWidget);
   });
 
   testWidgets('a delivery partner lands on the PARTNER shell (role-based navigation)', (
