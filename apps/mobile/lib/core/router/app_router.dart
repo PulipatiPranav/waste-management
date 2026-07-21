@@ -6,8 +6,8 @@ import '../../features/auth/domain/auth_state.dart';
 import '../../features/auth/presentation/auth_controller.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/otp_screen.dart';
+import '../../features/partner/presentation/partner_shell.dart';
 import '../../features/shell/presentation/customer_shell.dart';
-import '../../features/shell/presentation/partner_home_screen.dart';
 import '../../features/shell/presentation/splash_screen.dart';
 
 part 'app_router.g.dart';
@@ -85,7 +85,7 @@ GoRouter appRouter(Ref ref) {
       GoRoute(
         path: Routes.partner,
         name: 'partner',
-        builder: (context, state) => const PartnerHomeScreen(),
+        builder: (context, state) => const PartnerShell(),
       ),
     ],
     errorBuilder: (context, state) =>

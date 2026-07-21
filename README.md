@@ -3,11 +3,15 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 12 — customer screens.** The mobile app now has its core customer surface: browse
-> & subscribe to newspapers, manage subscriptions (pause/resume/cancel/change address), schedule
-> pickups with a scannable QR, the wallet (balance + ledger + withdrawal), an honestly-framed
-> impact dashboard, and the marketplace (browse/cart/checkout/orders) — all in a five-tab shell,
-> every screen with explicit loading/empty/error states from the Phase 11 design system.
+> **Status: Phase 13 — delivery-partner screens.** The same app now carries the partner's field
+> surface behind role-based navigation: today's delivery run (list/map toggle) with
+> delivered/failed/skipped outcomes and photo proof, QR-scan pickups with manual per-paper-type
+> weighing, and a completed-runs history — all **offline-first**. Every field action is written to a
+> durable Drift queue first and synced when connectivity returns, with a clear "pending sync" / "sync
+> failed" state so a partner is never unsure whether an action was recorded. The customer surface
+> from Phase 12 (browse & subscribe, manage subscriptions, schedule pickups, wallet, impact,
+> marketplace) is unchanged, every screen still routed through the Phase 11 design system's explicit
+> loading/empty/error states.
 >
 > ⚠️ **Read [Regulatory: the wallet is not a licensed instrument](#regulatory-the-wallet-is-not-a-licensed-instrument) before piloting with real money.**
 >
@@ -994,6 +998,55 @@ point of building the design system first: the states come for free and look the
 
 Widget tests cover the three flows the brief named — **subscribe, schedule pickup, view wallet** —
 each driving the real screen against a fake repository and asserting the request that goes out.
+
+## Delivery-partner app screens (Phase 13)
+
+The delivery partner works the same app — Phase 11 chose one app with role-based navigation, so a
+partner who verifies their number lands on a **partner shell** (Route · Pickups · History) that a
+customer can never reach, guarded in the router's single redirect. The partner's day is three
+screens:
+
+- **Today's route** — the assigned run as an ordered list of stops, with a list/map toggle. The map
+  is **honest**: stops carry no geocoded coordinates yet, so the toggle shows a plain note instead of
+  a fake map, and the list is the working view. Each stop opens an outcome screen —
+  **delivered / failed / skipped** — where failed and skipped require a reason and delivered can
+  attach **photo proof** (camera → uploaded → the returned key travels with the outcome).
+- **Pickups** — a **QR scanner** (with a manual-token fallback for a damaged code) reads the pickup
+  the customer shows, then a **manual weighing** screen captures grams per paper type. This is the
+  `WeighingDeviceReader` manual implementation surfaced in the UI: an estimate is quoted from the
+  entered weights before the partner commits the completion.
+- **History** — the partner's completed runs by date (delivered/failed/skipped counts). It is
+  honestly framed: the backend models no partner payout, so this shows work done, **not** earnings —
+  no invented rupee figure.
+
+**Offline resilience is the point of this phase.** A partner loses signal in stairwells, basements
+and dead zones all day, and a field action must never be lost. So every delivery outcome and every
+completed pickup is written **first** to a durable Drift queue (`PendingActions`, schema v2), then a
+sync is attempted immediately:
+
+- **Nothing is captured over the network.** Recording an outcome or weighing paper needs no
+  connectivity — only _syncing_ does — so the action is safe the instant the partner taps, online or
+  not.
+- **The queue is the source of truth until the server acknowledges.** A synced action is _deleted_
+  (the server is then the record); a pending action is _never dropped_, only retried; a permanently
+  rejected one is _parked visibly_ as "sync failed", never silently discarded.
+- **Dedup by `kind:targetId`.** Re-recording the same stop before it syncs upserts to one action
+  carrying the latest payload, never two racing writes.
+- **Single-flight drain.** A burst of triggers — three requests finishing, connectivity flapping —
+  drains the queue once, not three times, so nothing double-sends. A `connectivity_plus` listener
+  flushes automatically the moment signal returns; a "Sync now" button and an app-wide "N actions
+  waiting to sync" banner keep it visible and manual-overridable.
+- **Conflict-as-success.** A retried action the server already applied (an `ALREADY_*` / `CONFLICT`
+  response) is treated as _synced_, not failed — idempotency the client can trust.
+
+The sync engine is split so the risky logic is **pure and unit-tested**: `decideSync(failure)`
+(synced / retry / failed) is a pure function, and `SyncQueue` is a thin DAO over Drift. The brief
+called the queue the highest-risk area for data-loss bugs, so it carries the phase's heaviest tests —
+**11 tests** proving the invariants directly: an offline action persists and is never lost, dedup
+keeps the latest, an offline→online transition drains, a `CONFLICT` resolves to synced, a permanent
+validation error parks as failed (not looped), the drain is single-flight (no double-send), and the
+unsynced stream reflects the queue. The partner routing itself is covered by the auth-flow widget
+test (a partner lands on the partner shell, a customer cannot).
 
 ## Production readiness
 

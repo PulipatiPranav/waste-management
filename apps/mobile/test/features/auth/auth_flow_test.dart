@@ -9,6 +9,8 @@ import 'package:cpe_mobile/features/auth/domain/auth_repository.dart';
 import 'package:cpe_mobile/features/auth/domain/auth_user.dart';
 import 'package:cpe_mobile/features/auth/domain/session.dart';
 import 'package:cpe_mobile/features/auth/domain/user_role.dart';
+import 'package:cpe_mobile/features/partner/sync/sync_queue.dart';
+import 'package:cpe_mobile/features/partner/sync/syncer.dart';
 import 'package:cpe_mobile/core/network/api_failure.dart';
 import 'package:cpe_mobile/main.dart';
 import 'package:drift/native.dart';
@@ -76,6 +78,23 @@ class _OfflineAdapter implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
+/// The partner shell starts the connectivity watcher, which subscribes to the `connectivity_plus`
+/// plugin's event stream — unavailable in a widget test and a source of a pending platform timer at
+/// teardown. Override it with a no-op: the shell still renders, and the queue's on-start drain is
+/// exercised by the dedicated sync tests, not here.
+class _NoopConnectivitySync extends ConnectivitySync {
+  @override
+  void build() {}
+}
+
+/// The partner shell also opens two Drift `.watch()` streams for the pending-sync UI. Those streams
+/// leave a pending timer in the test binding at teardown; this routing test doesn't exercise the
+/// sync UI (that is covered by the sync-queue tests), so stub them with static, drained streams.
+final _partnerStreamOverrides = [
+  pendingSyncCountProvider.overrideWith((ref) => Stream.value(0)),
+  pendingSyncByTargetProvider.overrideWith((ref) => Stream.value(const {})),
+];
+
 Widget _app(AuthUser user) {
   return ProviderScope(
     overrides: [
@@ -87,6 +106,8 @@ Widget _app(AuthUser user) {
       dioProvider.overrideWith((ref) => Dio()..httpClientAdapter = _OfflineAdapter()),
       tokenStoreProvider.overrideWithValue(_FakeTokenStore()),
       authRepositoryProvider.overrideWithValue(_FakeAuthRepository(user)),
+      connectivitySyncProvider.overrideWith(_NoopConnectivitySync.new),
+      ..._partnerStreamOverrides,
     ],
     child: const CpeApp(),
   );
@@ -137,11 +158,12 @@ void main() {
 
     await tester.enterText(find.byType(TextFormField), '654321');
     await tester.tap(find.widgetWithText(FilledButton, 'Verify'));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('Delivery partner'), findsOneWidget);
-    // The customer greeting is NOT shown — the partner did not land on the customer shell.
-    expect(find.textContaining('Hello'), findsNothing);
+    // Authenticated as a partner -> the PARTNER shell (route tab), not the customer's Papers tab.
+    expect(find.text("Today's route"), findsOneWidget);
+    expect(find.text('My papers'), findsNothing);
   });
 
   testWidgets('login validates the phone number before requesting a code', (tester) async {
