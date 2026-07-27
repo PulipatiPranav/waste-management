@@ -1,4 +1,5 @@
-import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
+import { InjectQueue, Processor } from '@nestjs/bullmq';
+import { TracedWorkerHost } from '@/observability/tracing/traced-worker-host';
 import { Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue, type Job } from 'bullmq';
@@ -70,7 +71,7 @@ export class DeliveryPlannerScheduler implements OnApplicationBootstrap {
   // "created vs skipped" numbers in the log would become nonsense.
   concurrency: 1,
 })
-export class DeliveryPlannerWorker extends WorkerHost {
+export class DeliveryPlannerWorker extends TracedWorkerHost {
   private readonly logger = new Logger(DeliveryPlannerWorker.name);
 
   constructor(
@@ -80,7 +81,7 @@ export class DeliveryPlannerWorker extends WorkerHost {
     super();
   }
 
-  async process(
+  async processJob(
     job: Job<PlanJobData>,
   ): Promise<{ created: number; unassigned: number; pickupsAssigned: number }> {
     const runDate = job.data.runDate === undefined ? undefined : Day.parse(job.data.runDate);

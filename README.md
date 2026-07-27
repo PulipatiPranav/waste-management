@@ -3,15 +3,17 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 13 — delivery-partner screens.** The same app now carries the partner's field
-> surface behind role-based navigation: today's delivery run (list/map toggle) with
-> delivered/failed/skipped outcomes and photo proof, QR-scan pickups with manual per-paper-type
-> weighing, and a completed-runs history — all **offline-first**. Every field action is written to a
-> durable Drift queue first and synced when connectivity returns, with a clear "pending sync" / "sync
-> failed" state so a partner is never unsure whether an action was recorded. The customer surface
-> from Phase 12 (browse & subscribe, manage subscriptions, schedule pickups, wallet, impact,
-> marketplace) is unchanged, every screen still routed through the Phase 11 design system's explicit
-> loading/empty/error states.
+> **Status: Phase 14 — production readiness (observability & security).** The stack is now
+> instrumented and audited: **structured JSON logs** (pino) with a correlation id threaded from the
+> mobile app through the API and into every log line, secrets redacted; **OpenTelemetry** traces for
+> HTTP, DB queries (Prisma) and BullMQ jobs; a **Prometheus** `/metrics` endpoint; and **Sentry**
+> crash reporting across API, admin and the Flutter app — all inert until configured, so dev and
+> tests pay nothing. A full **OWASP API Security Top 10** pass (BOLA/IDOR, rate limiting, uploads,
+> SQL injection, CORS, secret logging) came back clean but for one real fix — **file-upload
+> hardening** (a memory-exhaustion vector and a spoofable `Content-Type`, now stream-limited and
+> magic-byte-verified). **k6** load scripts target the two money paths (pickup completion,
+> wallet credit). See the written findings doc:
+> [`docs/phase-14-production-readiness.md`](docs/phase-14-production-readiness.md).
 >
 > ⚠️ **Read [Regulatory: the wallet is not a licensed instrument](#regulatory-the-wallet-is-not-a-licensed-instrument) before piloting with real money.**
 >
@@ -1048,6 +1050,54 @@ validation error parks as failed (not looped), the drain is single-flight (no do
 unsynced stream reflects the queue. The partner routing itself is covered by the auth-flow widget
 test (a partner lands on the partner shell, a customer cannot).
 
+## Observability & security (Phase 14)
+
+The "before infra/deployment" phase: make the system **debuggable** and prove it's **safe**. Full
+write-up — verdicts, the one fix, load-test analysis, and the risks still needing a decision — is in
+[`docs/phase-14-production-readiness.md`](docs/phase-14-production-readiness.md).
+
+**Observability.** Everything below is **off unless configured**, so local dev and the test suite
+need no collector, no Prometheus and no DSN:
+
+- **Structured logging** (`nestjs-pino`) — every line is JSON with a `correlationId`. The mobile app
+  already stamps `x-correlation-id` on each request; the API reuses it as the log `reqId`, echoes it
+  on the response, and puts it in every error body, so a support ticket resolves to the exact request
+  chain across app → API → logs. Secret-bearing headers and `*.otp`/`*.token`/`*.password` fields are
+  `[redacted]` before anything is written.
+- **Tracing** (OpenTelemetry) — `instrumentation.ts` loads before the app and traces HTTP, Express,
+  ioredis (so all BullMQ↔Redis traffic), and **Prisma** (a span per DB query). BullMQ **job
+  execution** is traced via a `TracedWorkerHost` base class the six workers extend — one tracing
+  point, not six. Spans export over OTLP/HTTP to a collector.
+- **Metrics** (Prometheus) — `GET /metrics` at a fixed, unprefixed path (like the health probes),
+  default Node metrics plus an `http_request_duration_seconds` histogram (labelled by handler, not
+  URL, so ids don't blow up cardinality) and `wallet_credit_total` / `pickup_completed_total`
+  counters.
+- **Error reporting** (Sentry) — `@sentry/node` (API), `@sentry/nextjs` (admin), `sentry_flutter`
+  (mobile). Session Replay is off and PII is never attached — these surfaces show customer phones,
+  addresses and balances.
+
+**Security pass — OWASP API Top 10.** The codebase entered this phase strong (ownership from token
+throughout, a global auth guard, Redis-backed throttling, an append-only ledger with row locks), so
+the pass is mostly verification with **one real fix**:
+
+- **Upload hardening** — `POST /delivery/stops/:id/photo` used to buffer the whole file into memory
+  before checking size, and trusted the client-supplied `Content-Type`. Now multer aborts oversized
+  uploads mid-stream (`limits`), and the type is verified by **magic bytes** (`sniffImage`) with the
+  sniffed type stored — a spoofed header can neither get a non-image stored nor mislabel it.
+- **Verified clean:** BOLA/IDOR (owner from token; 404 on strangers' ids), mass assignment
+  (`whitelist` + `forbidNonWhitelisted`), auth/payment rate limits, **SQL injection** (every raw
+  query is a parameterised Prisma tagged template; no `*Unsafe` anywhere), CORS (allowlist, never
+  `*`), and secret logging (OTP logs use masked phones; header redaction added).
+
+**Load tests** ([`apps/api/load/`](apps/api/load/README.md)) — k6 scripts for pickup completion and
+wallet credit, the highest-consistency-risk paths. They run against staging (not CI); the findings
+doc explains where each breaks and why — pool saturation for the fan-out paths, and the per-wallet
+`SELECT … FOR UPDATE` row lock as a **deliberate** ceiling on same-wallet write rate (the lost-update
+guarantee showing up as latency, not a bug).
+
+New tests this phase: unit specs for the magic-byte sniffer, the metrics service, and the log
+correlation/redaction config, alongside the existing suites (all green).
+
 ## Production readiness
 
 **This is a working, well-tested pilot build — not a production deployment.** The core loop
@@ -1068,14 +1118,21 @@ CI/CD to a cluster), and this pass does **not** short-circuit those. What that m
   Redis-backed, so nothing silently breaks when you scale past one pod.
 - The env schema refuses to boot in production with dev-only providers (console SMS, local
   disk storage) or Swagger enabled.
+- **Observability is built in** (Phase 14): structured JSON logs with a correlation id threaded
+  app→API→logs and secrets redacted, OpenTelemetry traces (HTTP/DB/BullMQ), a Prometheus
+  `/metrics` endpoint, and Sentry across all three apps — inert until configured.
+- **Security-audited** (Phase 14): a full OWASP API Top 10 pass (see
+  [`docs/phase-14-production-readiness.md`](docs/phase-14-production-readiness.md)) came back clean
+  but for the upload hardening it fixed; SQLi is impossible (all raw queries are parameterised
+  tagged templates), IDOR is closed (ownership from token everywhere), auth/payment paths are
+  rate-limited and idempotent.
 
 **NOT ready — do this before real users or real money:**
 
-- **No observability.** No tracing, no metrics endpoint, no error reporting (Sentry), no
-  structured request logging with correlation IDs threaded through. When something breaks at
-  2am you will be reading raw logs. → **Phase 14.**
-- **No security audit.** Nobody has run the OWASP API Top 10 against these endpoints, load-
-  tested the wallet-credit path, or checked every file upload and raw query. → **Phase 14.**
+- **Observability must be turned on and pointed somewhere.** The code is inert without an OTLP
+  collector, a Prometheus scrape and Sentry DSNs; the Phase-15 deploy must configure them and keep
+  `/metrics` off the public ingress. And the **k6 load numbers are still pending** — the scripts
+  exist (`apps/api/load/`), but the p95/p99 breakpoints need a staging run on real hardware.
 - **No deployment.** No k8s manifests, no autoscaling, no managed secrets, no CI/CD to a
   cluster, no runbook. Secrets today live in `.env` files. → **Phase 15.**
 - **RBI PPI / DPDP / gig-worker classification** are unresolved legal questions (see below and

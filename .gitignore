@@ -64,3 +64,6 @@ pnpm-debug.log*
 # OpenAPI intermediate — regenerable from the app; the committed source of truth is
 # packages/shared-types/src/generated/api.ts
 apps/api/openapi.json
+
+# k6 load-test seed data — environment-specific ids, generated per staging run
+apps/api/load/.seed/

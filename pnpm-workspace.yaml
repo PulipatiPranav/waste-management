@@ -24,3 +24,9 @@ allowBuilds:
   # a pure-JS implementation if unbuilt, so this is a performance choice, not a
   # correctness one — but the native path is what the library expects in production.
   msgpackr-extract: true
+  # protobufjs' build only generates an optimised codec; unbuilt it falls back to reflection, and
+  # our OTLP exporter uses JSON encoding anyway. No need to run its install script.
+  protobufjs: false
+  # @sentry/cli downloads a native binary used ONLY to upload source maps during a CI build (with
+  # SENTRY_AUTH_TOKEN). Not needed for local installs or runtime; CI that uploads maps can flip this.
+  "@sentry/cli": false

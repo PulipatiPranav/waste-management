@@ -1,4 +1,5 @@
-import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
+import { InjectQueue, Processor } from '@nestjs/bullmq';
+import { TracedWorkerHost } from '@/observability/tracing/traced-worker-host';
 import { Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
@@ -59,14 +60,14 @@ export class BatchingScheduler implements OnApplicationBootstrap {
  * counted twice, which is the fastest possible way to lose an ESG audit.
  */
 @Processor(BATCHING_QUEUE, { concurrency: 1 })
-export class BatchingWorker extends WorkerHost {
+export class BatchingWorker extends TracedWorkerHost {
   private readonly logger = new Logger(BatchingWorker.name);
 
   constructor(private readonly recycling: RecyclingUseCases) {
     super();
   }
 
-  async process(): Promise<{ itemsBatched: number; readyToDispatch: number }> {
+  async processJob(): Promise<{ itemsBatched: number; readyToDispatch: number }> {
     const result = await this.recycling.runBatching();
 
     if (result.batchesReadyToDispatch > 0) {

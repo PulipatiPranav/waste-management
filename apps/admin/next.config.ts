@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { withSentryConfig } from '@sentry/nextjs';
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
@@ -26,4 +27,20 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+/**
+ * Sentry wraps the config to instrument the build and (in CI, with an auth token) upload source maps
+ * so a minified stack trace resolves back to real code. It is inert without a DSN, and skips the
+ * source-map upload without `SENTRY_AUTH_TOKEN`, so local `next build` is unaffected.
+ */
+export default withSentryConfig(nextConfig, {
+  // `exactOptionalPropertyTypes` forbids passing an explicit `undefined`, so only set org/project
+  // when they are actually configured (CI with the upload secrets).
+  ...(process.env.SENTRY_ORG !== undefined ? { org: process.env.SENTRY_ORG } : {}),
+  ...(process.env.SENTRY_PROJECT !== undefined ? { project: process.env.SENTRY_PROJECT } : {}),
+  // Quiet unless in CI, where the upload logs are worth seeing.
+  silent: process.env.CI === undefined,
+  // Route Sentry's browser requests through our own domain so ad blockers do not eat error reports.
+  tunnelRoute: '/monitoring',
+  // Keep the client bundle lean: drop the Sentry SDK's own debug logging in production builds.
+  disableLogger: true,
+});

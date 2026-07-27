@@ -17,6 +17,8 @@ import { RecyclingModule } from './modules/recycling/recycling.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { UsersModule } from './modules/users/users.module';
 import { WalletModule } from './modules/wallet/wallet.module';
+import { LoggingModule } from './observability/logging/logging.module';
+import { MetricsModule } from './observability/metrics/metrics.module';
 import { RedisModule } from './shared/infrastructure/cache/redis.module';
 import { PrismaModule } from './shared/infrastructure/persistence/prisma/prisma.module';
 import { IdempotencyInterceptor } from './shared/presentation/interceptors/idempotency.interceptor';
@@ -33,6 +35,9 @@ import { CorrelationIdMiddleware } from './shared/presentation/middleware/correl
 @Module({
   imports: [
     ConfigModule,
+    // Logging first so its structured logger is available to everything that boots after it.
+    LoggingModule,
+    MetricsModule,
     PrismaModule,
     RedisModule,
     AuthModule,

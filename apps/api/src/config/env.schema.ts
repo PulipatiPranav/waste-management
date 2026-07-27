@@ -31,6 +31,39 @@ export const envSchema = z.object({
     .default('true')
     .transform((value) => value === 'true'),
 
+  // --- Observability (Phase 14) ---------------------------------------------
+
+  /** Service name stamped on traces, metrics and errors so multiple services are distinguishable. */
+  OTEL_SERVICE_NAME: z.string().default('cpe-api'),
+
+  /**
+   * Turns OpenTelemetry tracing on. Off by default so local dev and tests do not need a
+   * collector; the deploy sets it true. Read in `instrumentation.ts` BEFORE the Nest app —
+   * hence `process.env` there, not this schema (the config module has not booted yet).
+   */
+  OTEL_ENABLED: z
+    .string()
+    .default('false')
+    .transform((value) => value === 'true'),
+
+  /** OTLP/HTTP collector endpoint, e.g. `http://otel-collector:4318`. Required when OTEL_ENABLED. */
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
+
+  /** Prometheus scrape endpoint (`GET /metrics`) is served only when true. */
+  METRICS_ENABLED: z
+    .string()
+    .default('true')
+    .transform((value) => value === 'true'),
+
+  /**
+   * Sentry DSN for the API. Empty = Sentry disabled (local/tests). Read in `instrumentation.ts`
+   * from `process.env` for the same boot-ordering reason as OTEL_ENABLED.
+   */
+  SENTRY_DSN: z.string().optional(),
+
+  /** Fraction of transactions traced by Sentry performance monitoring, 0..1. */
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0),
+
   // --- Auth -----------------------------------------------------------------
 
   /**
@@ -265,6 +298,16 @@ export const envSchemaWithRules = envSchema.superRefine((env, ctx) => {
         'Local disk storage cannot be used in production: proof-of-delivery photos would vanish ' +
         'with the pod, leaving no way to settle a delivery dispute. Implement an S3-compatible ' +
         'StorageProvider and add it to the STORAGE_PROVIDER enum before deploying.',
+    });
+  }
+
+  if (env.OTEL_ENABLED && env.OTEL_EXPORTER_OTLP_ENDPOINT === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['OTEL_EXPORTER_OTLP_ENDPOINT'],
+      message:
+        'OTEL_EXPORTER_OTLP_ENDPOINT is required when OTEL_ENABLED=true: tracing is on but there is ' +
+        'nowhere to export spans to. Point it at the collector, e.g. http://otel-collector:4318.',
     });
   }
 

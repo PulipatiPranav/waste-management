@@ -1,4 +1,5 @@
-import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
+import { InjectQueue, Processor } from '@nestjs/bullmq';
+import { TracedWorkerHost } from '@/observability/tracing/traced-worker-host';
 import { Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue, type Job } from 'bullmq';
@@ -63,7 +64,7 @@ export class WalletMaintenanceScheduler implements OnApplicationBootstrap {
 }
 
 @Processor(WALLET_MAINTENANCE_QUEUE, { concurrency: 1 })
-export class WalletMaintenanceWorker extends WorkerHost {
+export class WalletMaintenanceWorker extends TracedWorkerHost {
   private readonly logger = new Logger(WalletMaintenanceWorker.name);
 
   constructor(
@@ -73,7 +74,7 @@ export class WalletMaintenanceWorker extends WorkerHost {
     super();
   }
 
-  async process(job: Job): Promise<unknown> {
+  async processJob(job: Job): Promise<unknown> {
     switch (job.name as MaintenanceJob) {
       case 'reconcile-all':
         return this.reconcileAll();

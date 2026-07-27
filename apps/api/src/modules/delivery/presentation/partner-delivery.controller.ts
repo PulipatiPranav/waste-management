@@ -30,12 +30,18 @@ import {
 } from '@/modules/auth/presentation/decorators/current-user.decorator';
 import { Roles } from '@/modules/auth/presentation/decorators/roles.decorator';
 import { Day } from '@/modules/subscriptions/domain/value-objects/day';
+import { sniffImage } from '@/shared/presentation/upload/image-signature';
 import { PartnerDeliveryUseCases } from '../application/delivery.use-cases';
 import { type RunRecord, type StopRecord } from '../domain/ports/delivery.repository';
 import { DayQueryDto, RecordOutcomeDto, RunDto, StopDto } from './dto/delivery.dto';
 
-/** Phone cameras produce JPEG; some Android share sheets produce PNG or HEIC. */
-const ALLOWED_PHOTO_TYPES = ['image/jpeg', 'image/png'];
+/**
+ * A hard ceiling on how many bytes multer will buffer for a photo, enforced at the stream level so a
+ * malicious 2 GB upload is aborted mid-flight rather than fully read into memory before any check
+ * runs. It sits generously ABOVE the per-photo policy (`DELIVERY_PHOTO_MAX_BYTES`, checked below): a
+ * real phone JPEG is a few MB, so anything past this is an attack, not a large photo.
+ */
+const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
 
 /**
  * The delivery partner's own view. @Roles at class level, so every route added later is
@@ -82,7 +88,9 @@ export class PartnerDeliveryController {
    * flaky upload throws away the fact that the paper was delivered.
    */
   @Post('stops/:id/photo')
-  @UseInterceptors(FileInterceptor('photo'))
+  // `limits` makes multer abort the stream once the ceiling is crossed, so an oversized upload never
+  // gets fully buffered in memory — the size check further down is the policy, this is the guard.
+  @UseInterceptors(FileInterceptor('photo', { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } }))
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
@@ -100,28 +108,28 @@ export class PartnerDeliveryController {
       throw new BadRequestException('A photo file is required.');
     }
 
-    // Content type and size are checked HERE, not trusted from the client. An
-    // unvalidated upload endpoint is a free file-host and a memory-exhaustion vector,
-    // and it is on the OWASP list Phase 14 will audit against.
-    if (!ALLOWED_PHOTO_TYPES.includes(file.mimetype)) {
-      throw new BadRequestException(
-        `Unsupported image type ${file.mimetype}. Allowed: ${ALLOWED_PHOTO_TYPES.join(', ')}.`,
-      );
-    }
-
+    // Size is checked HERE against the exact policy; the multer `limits` above is the memory guard
+    // that already aborted anything past MAX_UPLOAD_BYTES before we got here.
     const maxBytes = this.config.get('DELIVERY_PHOTO_MAX_BYTES', { infer: true });
-
     if (file.size > maxBytes) {
       throw new BadRequestException(
         `Photo is ${file.size} bytes; the maximum is ${maxBytes}. Compress it on the device.`,
       );
     }
 
+    // Type is verified from the actual bytes, NOT the client-supplied `file.mimetype` (which is just
+    // the header the uploader wrote and can lie). Anything that is not really a JPEG/PNG is rejected,
+    // and we store the SNIFFED type so a spoofed header cannot mislabel what we persist.
+    const sniffed = sniffImage(file.buffer);
+    if (sniffed === null) {
+      throw new BadRequestException('Unsupported image. Only JPEG and PNG photos are accepted.');
+    }
+
     return this.delivery.attachPhoto({
       userId: current.id,
       stopId: id,
       body: file.buffer,
-      contentType: file.mimetype,
+      contentType: sniffed,
     });
   }
 

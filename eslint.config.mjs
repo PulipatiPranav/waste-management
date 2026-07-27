@@ -19,6 +19,9 @@ export default tseslint.config(
       '**/.next/**',
       '**/coverage/**',
       'apps/mobile/**',
+      // k6 load-test scripts run under the k6 runtime (remote https imports, k6 globals), not the
+      // TS project — linting them with the typed config is meaningless and errors.
+      'apps/api/load/**',
       '**/*.config.mjs',
       '**/*.config.js',
       '**/next-env.d.ts',

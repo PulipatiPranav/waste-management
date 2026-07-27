@@ -52,7 +52,9 @@ export function configureApp(app: INestApplication): INestApplication {
   // Kubernetes probes are configured against those literal paths; a version bump
   // must never move them.
   app.setGlobalPrefix(config.get('API_PREFIX', { infer: true }), {
-    exclude: ['health/live', 'health/ready'],
+    // `/metrics` joins the health probes at a fixed, unprefixed, version-neutral path so the
+    // Prometheus scrape config and k8s probes point at literal paths a version bump cannot move.
+    exclude: ['health/live', 'health/ready', 'metrics'],
   });
 
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });

@@ -1,4 +1,5 @@
-import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
+import { InjectQueue, Processor } from '@nestjs/bullmq';
+import { TracedWorkerHost } from '@/observability/tracing/traced-worker-host';
 import { Inject, Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { type Job, Queue } from 'bullmq';
@@ -69,7 +70,7 @@ export class ReminderScheduler implements OnApplicationBootstrap {
 }
 
 @Processor(REMINDERS_QUEUE, { concurrency: 1 })
-export class ReminderWorker extends WorkerHost {
+export class ReminderWorker extends TracedWorkerHost {
   private readonly logger = new Logger(ReminderWorker.name);
 
   constructor(
@@ -80,7 +81,7 @@ export class ReminderWorker extends WorkerHost {
     super();
   }
 
-  async process(job: Job): Promise<{ dispatched: number }> {
+  async processJob(job: Job): Promise<{ dispatched: number }> {
     if (job.name === RENEWAL_JOB) return this.renewalReminders();
     if (job.name === PICKUP_JOB) return this.pickupReminders();
     return { dispatched: 0 };

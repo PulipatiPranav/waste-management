@@ -1,4 +1,5 @@
-import { InjectQueue, OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
+import { InjectQueue, OnWorkerEvent, Processor } from '@nestjs/bullmq';
+import { TracedWorkerHost } from '@/observability/tracing/traced-worker-host';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { type Job, Queue } from 'bullmq';
 
@@ -103,7 +104,7 @@ export class QueueNotificationDispatcher implements NotificationDispatcher {
  * Dead tokens the provider reports are deactivated on every run, even a successful one.
  */
 @Processor(NOTIFICATIONS_QUEUE, { concurrency: 8 })
-export class NotificationWorker extends WorkerHost {
+export class NotificationWorker extends TracedWorkerHost<NotificationJob, { decision: string }> {
   private readonly logger = new Logger(NotificationWorker.name);
 
   constructor(
@@ -113,7 +114,7 @@ export class NotificationWorker extends WorkerHost {
     super();
   }
 
-  async process(job: Job<NotificationJob>): Promise<{ decision: string }> {
+  async processJob(job: Job<NotificationJob>): Promise<{ decision: string }> {
     const notification = await this.repo.findById(job.data.notificationId);
 
     // Already resolved (a replay, or the row was cleaned up): nothing to do.

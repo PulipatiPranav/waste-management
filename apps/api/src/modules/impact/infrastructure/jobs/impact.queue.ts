@@ -1,4 +1,5 @@
-import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
+import { InjectQueue, Processor } from '@nestjs/bullmq';
+import { TracedWorkerHost } from '@/observability/tracing/traced-worker-host';
 import { Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
@@ -57,14 +58,14 @@ export class ImpactScheduler implements OnApplicationBootstrap {
  * dashboard could read mid-run (the swap is one transaction).
  */
 @Processor(IMPACT_QUEUE, { concurrency: 1 })
-export class ImpactWorker extends WorkerHost {
+export class ImpactWorker extends TracedWorkerHost {
   private readonly logger = new Logger(ImpactWorker.name);
 
   constructor(private readonly impact: ImpactUseCases) {
     super();
   }
 
-  async process(): Promise<{ rows: number }> {
+  async processJob(): Promise<{ rows: number }> {
     this.logger.log('Recomputing sustainability impact cache from confirmed recycling.');
     return this.impact.refreshCache();
   }

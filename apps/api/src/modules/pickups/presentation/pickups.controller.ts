@@ -16,6 +16,7 @@ import {
 import { Roles } from '@/modules/auth/presentation/decorators/roles.decorator';
 import { Day } from '@/modules/subscriptions/domain/value-objects/day';
 import { gramsToKg, paiseToRupees } from '@/modules/wallet/domain/money';
+import { MetricsService } from '@/observability/metrics/metrics.service';
 import { Idempotent } from '@/shared/presentation/interceptors/idempotency.interceptor';
 import { PickupUseCases } from '../application/pickup.use-cases';
 import {
@@ -98,7 +99,10 @@ export class PickupsController {
 @Roles('DELIVERY_PARTNER')
 @Controller({ path: 'delivery/pickups', version: '1' })
 export class PartnerPickupsController {
-  constructor(private readonly pickups: PickupUseCases) {}
+  constructor(
+    private readonly pickups: PickupUseCases,
+    private readonly metrics: MetricsService,
+  ) {}
 
   @Post('scan')
   @ApiOperation({
@@ -171,6 +175,11 @@ export class PartnerPickupsController {
       pickupId: id,
       weights: dto.weights,
     });
+
+    // Count the completion and its cashback credit. On an idempotent replay the handler never runs
+    // (the interceptor returns the cached response), so a retried double-tap is not double-counted.
+    this.metrics.incPickupCompleted();
+    this.metrics.incWalletCredit('pickup_cashback');
 
     return {
       pickupId: result.pickupId,

@@ -1,9 +1,13 @@
 import 'reflect-metadata';
 
-import { Logger } from '@nestjs/common';
+// MUST be first: OpenTelemetry patches http/express/ioredis/Prisma by intercepting their `require`,
+// so the SDK has to start before AppModule (and the libraries it pulls in) is imported below.
+import { startInstrumentation } from './instrumentation';
+
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { Logger as PinoLogger } from 'nestjs-pino';
 
 import { AppModule } from './app.module';
 import { configureApp } from './bootstrap/configure-app';
@@ -11,15 +15,31 @@ import { type Env } from './config/env.schema';
 import { RedisIoAdapter } from './shared/infrastructure/realtime/redis-io.adapter';
 
 async function bootstrap(): Promise<void> {
+  // Start Sentry + OpenTelemetry (both no-ops unless configured). The returned hook flushes them on
+  // shutdown so in-flight spans and errors are not lost when the pod drains.
+  const shutdownInstrumentation = startInstrumentation();
+
   // `rawBody: true` preserves the exact request bytes on `req.rawBody`, which the payment
   // webhook needs: its HMAC signature is over the raw body, and a re-serialised parsed JSON
   // has different whitespace and key order, so every valid webhook would fail to verify.
-  const app = await NestFactory.create(AppModule, { bufferLogs: false, rawBody: true });
+  //
+  // `bufferLogs: true` holds boot logs until the pino logger is installed just below, so even
+  // startup lines are emitted as structured JSON through the same pipeline as everything else.
+  const app = await NestFactory.create(AppModule, { bufferLogs: true, rawBody: true });
+
+  // The structured (pino) logger becomes the app-wide logger, replacing Nest's text formatter.
+  const logger = app.get(PinoLogger);
+  app.useLogger(logger);
+
   const config = app.get<ConfigService<Env, true>>(ConfigService);
-  const logger = new Logger('Bootstrap');
 
   // Shared with the e2e suite, so the tests exercise the app as it actually runs.
   configureApp(app);
+
+  // Flush traces/errors on a clean shutdown, alongside Nest's own shutdown hooks.
+  process.on('beforeExit', () => {
+    void shutdownInstrumentation();
+  });
 
   // Lets Kubernetes drain in-flight requests before the process exits.
   app.enableShutdownHooks();
