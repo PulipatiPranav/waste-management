@@ -1,3 +1,6 @@
+// @ts-nocheck — this runs under the k6 binary (its own JS runtime), not Node/tsc. The `k6/*` and
+// remote `https://` imports and the `__ENV`/`__VU` globals are provided by k6 and are not resolvable
+// by an editor's TypeScript service, so type-checking here only produces false errors. Not built by CI.
 /**
  * k6 load test: pickup completion — the highest-consistency-risk write in the product.
  *

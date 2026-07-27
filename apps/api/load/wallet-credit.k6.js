@@ -1,3 +1,6 @@
+// @ts-nocheck — this runs under the k6 binary (its own JS runtime), not Node/tsc. The `k6/*` and
+// remote `https://` imports and the `__ENV`/`__ITER` globals are provided by k6 and are not resolvable
+// by an editor's TypeScript service, so type-checking here only produces false errors. Not built by CI.
 /**
  * k6 load test: wallet credit — the append-only ledger write under concurrency.
  *
