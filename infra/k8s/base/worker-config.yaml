@@ -1,0 +1,18 @@
+# Worker-only overrides, layered ON TOP of cpe-api-config (the worker Deployment lists
+# both, and a later envFrom wins for a duplicate key). This is the ONE place background
+# jobs are scheduled, so the nightly crons fire exactly once regardless of how many API
+# replicas are running.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cpe-worker-config
+  namespace: cpe
+data:
+  # Distinguishes worker spans/metrics from API spans/metrics.
+  OTEL_SERVICE_NAME: "cpe-worker"
+  # This replica DOES schedule the repeatable jobs.
+  DELIVERY_PLANNER_ENABLED: "true"
+  WALLET_MAINTENANCE_ENABLED: "true"
+  BATCHING_ENABLED: "true"
+  IMPACT_AGGREGATION_ENABLED: "true"
+  NOTIFICATIONS_ENABLED: "true"

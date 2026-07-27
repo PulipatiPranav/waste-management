@@ -1,0 +1,28 @@
+# Pod disruption budgets keep a voluntary disruption (a node drain during an upgrade)
+# from taking the whole service down at once. Involuntary failures (a node dying) are
+# not covered by a PDB — that is what multiple replicas and the HPA are for.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cpe-api
+  namespace: cpe
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cpe-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cpe-worker
+  namespace: cpe
+spec:
+  # The worker can briefly drop to zero during a drain — the queue holds jobs until a
+  # replacement is up — but the scheduler being down means a cron that fires in that window
+  # is simply enqueued late, never lost. maxUnavailable keeps a single-replica worker
+  # drainable at all (minAvailable:1 on a 1-replica Deployment would block every drain).
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cpe-worker

@@ -1,0 +1,101 @@
+# In-cluster Redis for BullMQ and the rate-limit / socket.io adapter.
+#
+# PRODUCTION NOTE: a managed Redis (ElastiCache, Memorystore, Upstash) is strongly
+# preferred over self-hosting — failover, backups and patching are then someone else's
+# job, and Redis holds queued wallet credits you do not want to lose. To use one, delete
+# this file from the kustomization and point REDIS_HOST/REDIS_PORT/REDIS_PASSWORD (secret)
+# at the managed endpoint. This manifest is a correct, durable single-node setup for
+# staging and self-hosted clusters.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cpe-redis
+  namespace: cpe
+  labels:
+    app.kubernetes.io/name: cpe-redis
+    app.kubernetes.io/part-of: circular-paper-economy
+spec:
+  serviceName: cpe-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cpe-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cpe-redis
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          # `appendonly yes` keeps queued jobs across a restart; `requirepass` reads the
+          # same secret the API authenticates with, so an exposed port isn't an open Redis.
+          command:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --requirepass
+            - "$(REDIS_PASSWORD)"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cpe-api-secrets
+                  key: REDIS_PASSWORD
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", 'redis-cli -a "$REDIS_PASSWORD" ping | grep -q PONG']
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", 'redis-cli -a "$REDIS_PASSWORD" ping | grep -q PONG']
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cpe-redis
+  namespace: cpe
+  labels:
+    app.kubernetes.io/name: cpe-redis
+spec:
+  # Headless: the StatefulSet pod is addressed directly, and there is only one.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: cpe-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis

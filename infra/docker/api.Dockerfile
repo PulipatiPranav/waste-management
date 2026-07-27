@@ -30,7 +30,21 @@ RUN pnpm --filter @cpe/shared-types build \
  && pnpm --filter @cpe/api exec prisma generate \
  && pnpm --filter @cpe/api build
 
-# Strip dev dependencies from the store the runtime stage copies.
+# ---- migrate ----------------------------------------------------------------
+# A SEPARATE image (built with `--target migrate`) that keeps the Prisma CLI — the
+# runtime image below prunes it away. The Phase 15 migration Job runs THIS image with a
+# single `prisma migrate deploy`, as a controlled, one-shot step before the app rollout.
+# It is never run on pod boot (that would migrate N times across N replicas).
+FROM build AS migrate
+RUN addgroup -S nodejs -g 1001 && adduser -S nestjs -u 1001 -G nodejs \
+ && chown -R nestjs:nodejs /app/apps/api
+USER nestjs
+WORKDIR /app/apps/api
+CMD ["node_modules/.bin/prisma", "migrate", "deploy"]
+
+# ---- prune ------------------------------------------------------------------
+# Strip dev dependencies (incl. the Prisma CLI) from the store the runtime copies.
+FROM build AS prune
 RUN pnpm --filter @cpe/api... --filter . prune --prod
 
 # ---- runtime ----------------------------------------------------------------
@@ -41,7 +55,7 @@ WORKDIR /app
 # Never run the API as root.
 RUN addgroup -S nodejs -g 1001 && adduser -S nestjs -u 1001 -G nodejs
 
-COPY --from=build --chown=nestjs:nodejs /app/node_modules ./node_modules
+COPY --from=prune --chown=nestjs:nodejs /app/node_modules ./node_modules
 COPY --from=build --chown=nestjs:nodejs /app/packages/shared-types ./packages/shared-types
 COPY --from=build --chown=nestjs:nodejs /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=build --chown=nestjs:nodejs /app/apps/api/dist ./apps/api/dist

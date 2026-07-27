@@ -1,0 +1,87 @@
+# The internal ops/admin console (Next.js standalone), containerised on the same cluster
+# as the API for infra consistency (the Phase 15 assumption; swap for Vercel by deleting
+# this + admin-service and pointing DNS at Vercel instead).
+#
+# NEXT_PUBLIC_API_BASE_URL is baked into the client bundle at BUILD time (a Docker ARG),
+# not read here — so a given admin image is pinned to one API origin. Rebuild to retarget.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpe-admin
+  namespace: cpe
+  labels:
+    app.kubernetes.io/name: cpe-admin
+    app.kubernetes.io/part-of: circular-paper-economy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cpe-admin
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cpe-admin
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: admin
+          image: ghcr.io/OWNER/cpe-admin:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3001
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3001"
+            - name: HOSTNAME
+              value: "0.0.0.0"
+          # Next's standalone server responds on / once it is up; there is no separate
+          # health route, so the root doubles as the probe target.
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cpe-admin
+  namespace: cpe
+  labels:
+    app.kubernetes.io/name: cpe-admin
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: cpe-admin
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

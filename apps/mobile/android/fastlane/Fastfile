@@ -1,0 +1,23 @@
+# Fastlane lanes for Android. Credentials come from env vars (set as CI secrets) — nothing
+# sensitive is committed. The GitHub workflow builds the AAB, then a MANUALLY-APPROVED job
+# runs `fastlane android internal` to push it to the Play Store internal testing track.
+
+default_platform(:android)
+
+platform :android do
+  desc "Upload the release AAB to the Play Store INTERNAL testing track (as a draft)"
+  lane :internal do
+    upload_to_play_store(
+      track: "internal",
+      aab: ENV["AAB_PATH"] || "../build/app/outputs/bundle/release/app-release.aab",
+      json_key: ENV["PLAY_STORE_JSON_KEY_PATH"],
+      # Draft, not live: it lands on the internal track and a human promotes it to
+      # testers/production from the Play Console. Nothing auto-publishes.
+      release_status: "draft",
+      skip_upload_apk: true,
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+end

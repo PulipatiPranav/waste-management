@@ -1,0 +1,51 @@
+# Controlled database migration.
+#
+# This is NOT part of the kustomization and is NOT applied on deploy. The CI deploy
+# workflow runs it as a SEPARATE, explicit step — build image, run this Job, WAIT for it
+# to succeed, and only THEN roll out the app — so a bad migration stops the release before
+# any new code serves traffic. `prisma migrate deploy` only applies already-reviewed
+# migration files (it never generates or resets), and running it as one Job means it
+# executes exactly once, not once per replica.
+#
+# The image tag (OWNER + release tag) is substituted by CI. The workflow deletes any prior
+# Job of this name first, since a completed Job is immutable.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cpe-migrate
+  namespace: cpe
+  labels:
+    app.kubernetes.io/name: cpe-migrate
+    app.kubernetes.io/part-of: circular-paper-economy
+spec:
+  backoffLimit: 1 # a failed migration should surface fast, not retry into a worse state
+  ttlSecondsAfterFinished: 3600 # self-clean an hour after finishing
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cpe-migrate
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: migrate
+          # Built with `--target migrate` (keeps the Prisma CLI). SAME release tag as the app.
+          image: ghcr.io/OWNER/cpe-migrate:REPLACE_WITH_RELEASE_TAG
+          command: ["node_modules/.bin/prisma", "migrate", "deploy"]
+          envFrom:
+            - secretRef:
+                name: cpe-api-secrets # DATABASE_URL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

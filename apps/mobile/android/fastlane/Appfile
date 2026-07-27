@@ -1,0 +1,4 @@
+# Non-secret app identity. The Play service-account JSON is provided at runtime via
+# PLAY_STORE_JSON_KEY_PATH (a CI secret written to disk), never committed here.
+package_name(ENV["ANDROID_PACKAGE_NAME"] || "com.circularpaper.cpe_mobile")
+json_key_file(ENV["PLAY_STORE_JSON_KEY_PATH"])

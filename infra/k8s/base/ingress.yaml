@@ -1,0 +1,59 @@
+# Public entry points. Hosts are placeholders patched per environment in the overlays.
+#
+# SECURITY: the API ingress routes ONLY the `/api` prefix. That is deliberate — the app
+# also serves `/metrics` (Prometheus) and `/health/*` at the root, and neither should be
+# reachable from the internet. Prometheus scrapes `/metrics` in-cluster via the Service;
+# the kubelet hits `/health/*` on the pod directly. Nothing outside the cluster needs them,
+# so nothing outside the cluster is given them.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cpe-api
+  namespace: cpe
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "12m" # matches the API's upload ceiling
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.example.com
+      secretName: cpe-api-tls
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: cpe-api
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cpe-admin
+  namespace: cpe
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  labels:
+    app.kubernetes.io/name: cpe-admin
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - admin.example.com
+      secretName: cpe-admin-tls
+  rules:
+    - host: admin.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cpe-admin
+                port:
+                  number: 80

@@ -1,0 +1,52 @@
+# Horizontal pod autoscaling.
+#
+# CPU-based is the honest baseline until Phase 15's load test (apps/api/load/) produces
+# real numbers. The API scales on request-driven CPU. The worker's TRUE signal is queue
+# DEPTH, not CPU — a backlog of pending jobs should add workers even while CPU is idle —
+# which needs KEDA's `redis` scaler (a ScaledObject on the BullMQ list length). CPU HPA
+# is a reasonable stopgap; the runbook flags KEDA as the follow-up.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cpe-api
+  namespace: cpe
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cpe-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Scale in slowly so a brief lull doesn't drop capacity right before the next spike.
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 30
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cpe-worker
+  namespace: cpe
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cpe-worker
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75

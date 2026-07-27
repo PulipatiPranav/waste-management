@@ -1,0 +1,89 @@
+# The BullMQ worker Deployment.
+#
+# Same image and same code as the API — the difference is purely configuration: this is
+# the sole process that SCHEDULES the repeatable jobs (cpe-worker-config flips the
+# *_ENABLED flags on), and it exists so background work has dedicated, independently
+# scalable capacity instead of competing with request handling.
+#
+# It still runs the HTTP server (the app always does), but there is deliberately NO
+# Service in front of it — nothing routes traffic here. The HTTP port exists only so the
+# kubelet can hit /health/live and /health/ready, which check the same Postgres/Redis the
+# jobs depend on.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpe-worker
+  namespace: cpe
+  labels:
+    app.kubernetes.io/name: cpe-worker
+    app.kubernetes.io/part-of: circular-paper-economy
+spec:
+  # Start with ONE. Job throughput scales by raising this (and per-queue concurrency),
+  # but the scheduler is idempotent across replicas so more than one is safe.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cpe-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cpe-worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: worker
+          # Overlays patch this with the SAME immutable tag/digest as the API — one image,
+          # two roles. Never let the api and worker run different builds.
+          image: ghcr.io/OWNER/cpe-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: cpe-api-config
+            # Listed AFTER the shared config so its *_ENABLED=true overrides win.
+            - configMapRef:
+                name: cpe-worker-config
+            - secretRef:
+                name: cpe-api-secrets
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          # Let an in-flight job finish before the container is killed. The queue redelivers
+          # anything that doesn't ack, and every job is idempotent, so a hard kill is safe —
+          # but a clean drain avoids needless retries.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              # Jobs (PDF generation, batching aggregates) are burstier than requests, so
+              # the memory limit is a little higher than the API's.
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      # Longer than the API: a mid-flight batching or reconcile job should get time to
+      # commit its transaction rather than be interrupted and redelivered.
+      terminationGracePeriodSeconds: 60

@@ -3,17 +3,21 @@
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
 
-> **Status: Phase 14 — production readiness (observability & security).** The stack is now
-> instrumented and audited: **structured JSON logs** (pino) with a correlation id threaded from the
-> mobile app through the API and into every log line, secrets redacted; **OpenTelemetry** traces for
-> HTTP, DB queries (Prisma) and BullMQ jobs; a **Prometheus** `/metrics` endpoint; and **Sentry**
-> crash reporting across API, admin and the Flutter app — all inert until configured, so dev and
-> tests pay nothing. A full **OWASP API Security Top 10** pass (BOLA/IDOR, rate limiting, uploads,
-> SQL injection, CORS, secret logging) came back clean but for one real fix — **file-upload
-> hardening** (a memory-exhaustion vector and a spoofable `Content-Type`, now stream-limited and
-> magic-byte-verified). **k6** load scripts target the two money paths (pickup completion,
-> wallet credit). See the written findings doc:
-> [`docs/phase-14-production-readiness.md`](docs/phase-14-production-readiness.md).
+> **Status: Phase 15 — deployable.** The whole platform now has a deployment path: **Kustomize
+> manifests** for the API, a dedicated **BullMQ worker** (the sole cron scheduler), Redis, and the
+> admin console — with resource limits, liveness/readiness probes, HPAs and PodDisruptionBudgets.
+> **GitHub Actions** builds immutable images on merge, auto-deploys to **staging**, then holds at a
+> **manual approval gate** before production, running **`prisma migrate deploy` as a separate, gated
+> step** before any rollout. A **Flutter pipeline** builds signed Android/iOS artifacts on a
+> `mobile-v*` tag and promotes them to the store **internal tracks** behind a manual gate. **Secrets
+> never touch the repo** (External Secrets Operator; the env schema fails fast without real ones).
+> Operations are documented in the **[runbook](docs/runbook.md)** — deploy, roll back, check health,
+> and what to do when the wallet-credit job pages you at 2am.
+>
+> _Prior phase (14 — observability & security): structured JSON logs with end-to-end correlation
+> ids, OpenTelemetry traces (HTTP/DB/BullMQ), a Prometheus `/metrics` endpoint, Sentry across all
+> three apps, and a clean OWASP API Top 10 pass but for the upload hardening it fixed. See
+> [`docs/phase-14-production-readiness.md`](docs/phase-14-production-readiness.md)._
 >
 > ⚠️ **Read [Regulatory: the wallet is not a licensed instrument](#regulatory-the-wallet-is-not-a-licensed-instrument) before piloting with real money.**
 >
@@ -1098,6 +1102,39 @@ guarantee showing up as latency, not a bug).
 New tests this phase: unit specs for the magic-byte sniffer, the metrics service, and the log
 correlation/redaction config, alongside the existing suites (all green).
 
+## Deployment (Phase 15)
+
+Everything needed to ship the platform, in [`infra/`](infra/) and [`.github/workflows/`](.github/workflows/).
+The [runbook](docs/runbook.md) covers day-2 operations.
+
+**Kubernetes (Kustomize, base + staging/production overlays):**
+
+- **API** Deployment (HTTP; job scheduling off), **worker** Deployment (the sole cron scheduler,
+  dedicated job capacity), **Redis** StatefulSet, and the **admin** Deployment — each with
+  liveness/readiness probes, resource requests/limits, a read-only root FS and dropped capabilities.
+- **HPAs** (API + worker) and **PodDisruptionBudgets**; an **Ingress** that routes only `/api`
+  externally so `/metrics` and `/health` stay in-cluster.
+- The **API and worker run the same image**, split purely by config — so the nightly jobs schedule
+  exactly once instead of on every replica (the old multi-replica-cron issue, now fixed).
+
+**CI/CD ([`deploy.yml`](.github/workflows/deploy.yml)):** on merge to `main`, build immutable images
+(tagged by commit sha) → push to GHCR → **auto-deploy staging** → **pause at the `production`
+approval gate** → deploy production. `prisma migrate deploy` runs as a **separate Job that must
+succeed before any rollout** — a bad migration stops the release before new code serves traffic, and
+`migrate deploy` only applies reviewed migration files (never generates or resets).
+
+**Mobile ([`mobile-release.yml`](.github/workflows/mobile-release.yml)):** a `mobile-v*` tag builds a
+signed **AAB** and **IPA**; a **manual approval gate** then promotes them (via Fastlane) to the Play
+**internal track** and **TestFlight** — as drafts, never straight to production.
+
+**Secrets never touch the repo:** `*.example.yaml` manifests document the _keys_; real values come
+from the **External Secrets Operator** reading a cloud secret manager, and the env schema fails fast
+in production without them. CI/CD secrets live in GitHub.
+
+Known follow-ups (in the runbook): worker autoscaling should key off queue depth (KEDA) not CPU;
+managed Postgres/Redis are preferred over self-hosted; real SMS + S3 storage providers are the
+remaining code prerequisite before the API boots in `NODE_ENV=production`.
+
 ## Production readiness
 
 **This is a working, well-tested pilot build — not a production deployment.** The core loop
@@ -1126,22 +1163,24 @@ CI/CD to a cluster), and this pass does **not** short-circuit those. What that m
   but for the upload hardening it fixed; SQLi is impossible (all raw queries are parameterised
   tagged templates), IDOR is closed (ownership from token everywhere), auth/payment paths are
   rate-limited and idempotent.
+- **Deployable** (Phase 15): Kustomize manifests (API, worker, Redis, admin) with probes, limits,
+  HPAs and PDBs; CI/CD that builds immutable images, auto-deploys staging, gates production behind a
+  manual approval, and runs migrations as a separate reviewed step; a Flutter build+promote pipeline;
+  External-Secrets-based secret management; and a [runbook](docs/runbook.md). The nightly jobs now
+  run on a single worker Deployment, not every replica.
 
 **NOT ready — do this before real users or real money:**
 
-- **Observability must be turned on and pointed somewhere.** The code is inert without an OTLP
-  collector, a Prometheus scrape and Sentry DSNs; the Phase-15 deploy must configure them and keep
-  `/metrics` off the public ingress. And the **k6 load numbers are still pending** — the scripts
-  exist (`apps/api/load/`), but the p95/p99 breakpoints need a staging run on real hardware.
-- **No deployment.** No k8s manifests, no autoscaling, no managed secrets, no CI/CD to a
-  cluster, no runbook. Secrets today live in `.env` files. → **Phase 15.**
+- **The deploy pipeline needs a cluster + secrets wired to it.** The manifests and workflows exist,
+  but they need a real Kubernetes cluster, DNS, TLS (cert-manager), the GitHub Environments/secrets,
+  and the observability stack (collector + Prometheus + Sentry DSNs) actually provisioned. See the
+  setup roadmap. **k6 load numbers are still pending** a staging run to set HPA thresholds from data.
+- **A real SMS provider and real S3-compatible storage must be implemented** — the schema ships only
+  dev stubs (`console` SMS, `local` storage) and **refuses them in production**, so the API will not
+  boot in prod until these exist. Payment (`razorpay`) and push (`fcm`) providers already exist and
+  just need credentials.
 - **RBI PPI / DPDP / gig-worker classification** are unresolved legal questions (see below and
   the Phase 16 checklist). None are engineering problems; all can block a public launch.
-- **A real SMS provider, real S3-compatible storage, and a real payment gateway** must replace
-  the dev stubs. `PAYMENT_GATEWAY_PROVIDER=fake` and the default webhook secret are refused in
-  production; set `razorpay` with real credentials and a real webhook secret before any live money.
-- **The nightly jobs run on every replica.** With more than one pod you'll plan/batch/reconcile
-  N times. Harmless (all idempotent) but wasteful — gate them to one worker in Phase 15.
 
 Treat this as ready for a **controlled pilot** (one apartment complex, one recycler, staff
 watching) — not an open launch.

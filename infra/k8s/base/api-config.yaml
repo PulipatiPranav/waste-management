@@ -1,5 +1,12 @@
-# Non-secret configuration only. Anything sensitive belongs in the Secret —
-# see api-secret.example.yaml.
+# Non-secret configuration shared by the API and worker Deployments. Anything
+# sensitive belongs in the Secret — see api-secret.example.yaml.
+#
+# Job SCHEDULING is turned OFF here: these flags gate the repeatable-cron registration,
+# and if every API replica scheduled, the nightly planner/batching/reconcile would be
+# enqueued N times (harmless — idempotent — but wasteful). The single worker Deployment
+# turns them back on via cpe-worker-config, so exactly one process schedules. Both the
+# API and worker pods still *consume* jobs (BullMQ hands each job to one consumer), so
+# nothing is lost by the API scheduling nothing.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -17,3 +24,19 @@ data:
   CORS_ORIGINS: "https://admin.example.com"
   REDIS_HOST: "cpe-redis"
   REDIS_PORT: "6379"
+
+  # --- Observability (Phase 14) ---
+  OTEL_SERVICE_NAME: "cpe-api"
+  # Tracing is enabled at the overlay level once a collector exists; base leaves it off
+  # so a bare `kubectl apply` of base never points at a collector that isn't there.
+  OTEL_ENABLED: "false"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.observability:4318"
+  METRICS_ENABLED: "true"
+  SENTRY_TRACES_SAMPLE_RATE: "0.1"
+
+  # --- Background jobs: SCHEDULING off on the API (see header) ---
+  DELIVERY_PLANNER_ENABLED: "false"
+  WALLET_MAINTENANCE_ENABLED: "false"
+  BATCHING_ENABLED: "false"
+  IMPACT_AGGREGATION_ENABLED: "false"
+  NOTIFICATIONS_ENABLED: "false"

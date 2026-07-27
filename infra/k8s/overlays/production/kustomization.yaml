@@ -7,11 +7,51 @@ resources:
   - ../../base
 
 images:
+  # The deploy job patches these with the immutable release tag CI built (same tag for
+  # api and worker). A floating `latest` in production means you cannot say what is running.
   - name: ghcr.io/OWNER/cpe-api
-    # Phase 15's deploy job patches this with the immutable image digest CI built.
-    # A floating `latest` tag in production means you cannot say what is running.
+    newTag: REPLACE_WITH_RELEASE_TAG
+  - name: ghcr.io/OWNER/cpe-admin
     newTag: REPLACE_WITH_RELEASE_TAG
 
 replicas:
   - name: cpe-api
     count: 3
+  - name: cpe-worker
+    count: 2
+  - name: cpe-admin
+    count: 2
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: cpe-api-config
+    patch: |-
+      - op: replace
+        path: /data/CORS_ORIGINS
+        value: "https://admin.example.com"
+      # Turn tracing on in production. Safe even before the collector exists: the exporter
+      # just logs failed exports, it does not block boot. Install the collector to see spans.
+      - op: replace
+        path: /data/OTEL_ENABLED
+        value: "true"
+  - target:
+      kind: Ingress
+      name: cpe-api
+    patch: |-
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: "api.example.com"
+      - op: replace
+        path: /spec/rules/0/host
+        value: "api.example.com"
+  - target:
+      kind: Ingress
+      name: cpe-admin
+    patch: |-
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: "admin.example.com"
+      - op: replace
+        path: /spec/rules/0/host
+        value: "admin.example.com"

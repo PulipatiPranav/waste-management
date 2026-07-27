@@ -3,13 +3,22 @@ kind: Kustomization
 
 namespace: cpe
 
-# api-secret.example.yaml is deliberately NOT listed: it documents the expected keys,
-# it is not a manifest to apply.
+# Deliberately NOT listed here (each for a reason):
+#   - api-secret.example.yaml       documents expected keys; real secrets come from ESO
+#   - external-secrets.example.yaml shape only; applied after installing the operator
+#   - migrate-job.yaml              a one-shot Job the CI deploy runs as a separate step
 resources:
   - namespace.yaml
   - api-config.yaml
   - api-deployment.yaml
   - api-service.yaml
+  - worker-config.yaml
+  - worker-deployment.yaml
+  - redis.yaml
+  - admin-deployment.yaml
+  - ingress.yaml
+  - hpa.yaml
+  - pdb.yaml
 
 # includeSelectors:false matters. A label folded into a Deployment's matchLabels
 # becomes immutable — changing it later means deleting and recreating the Deployment.

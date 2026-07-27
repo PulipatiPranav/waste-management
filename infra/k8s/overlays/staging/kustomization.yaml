@@ -6,12 +6,20 @@ namespace: cpe
 resources:
   - ../../base
 
+# One entry for cpe-api covers BOTH the api and worker Deployments — they run the same
+# image by design. cpe-admin is a separate image.
 images:
   - name: ghcr.io/OWNER/cpe-api
+    newTag: staging
+  - name: ghcr.io/OWNER/cpe-admin
     newTag: staging
 
 replicas:
   - name: cpe-api
+    count: 1
+  - name: cpe-worker
+    count: 1
+  - name: cpe-admin
     count: 1
 
 patches:
@@ -25,3 +33,24 @@ patches:
       - op: replace
         path: /data/LOG_LEVEL
         value: "debug"
+  # Point the ingresses at the staging hosts.
+  - target:
+      kind: Ingress
+      name: cpe-api
+    patch: |-
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: "api.staging.example.com"
+      - op: replace
+        path: /spec/rules/0/host
+        value: "api.staging.example.com"
+  - target:
+      kind: Ingress
+      name: cpe-admin
+    patch: |-
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: "admin.staging.example.com"
+      - op: replace
+        path: /spec/rules/0/host
+        value: "admin.staging.example.com"

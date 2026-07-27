@@ -1,0 +1,196 @@
+name: Deploy
+
+# Build immutable images on every merge to main, roll them out to STAGING automatically,
+# then hold at a manual approval gate before PRODUCTION.
+#
+# CI (lint/typecheck/build/unit/e2e) is a separate required check on the PR that produced
+# the merge; this workflow is about shipping the already-tested commit.
+on:
+  push:
+    branches: [main]
+  # Lets you re-deploy a specific commit without a new merge (e.g. a rollback).
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref (tag or SHA) to deploy"
+        required: false
+
+concurrency:
+  # Never let two deploys of the same branch race each other onto the cluster.
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  # Lowercased owner; GHCR image names must be lowercase.
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build & push api, migrate and admin images, tagged with the commit SHA
+  # (immutable) plus a moving `staging` tag.
+  # ---------------------------------------------------------------------------
+  build-push:
+    name: Build & push images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push to GHCR
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.sha }}
+
+      - name: Compute image tag
+        id: meta
+        run: echo "tag=sha-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Lowercase image prefix
+        id: prefix
+        run: echo "value=$(echo '${{ env.IMAGE_PREFIX }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # API runtime image.
+      - name: Build & push cpe-api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/api.Dockerfile
+          target: runtime
+          push: true
+          tags: |
+            ${{ steps.prefix.outputs.value }}/cpe-api:${{ steps.meta.outputs.tag }}
+            ${{ steps.prefix.outputs.value }}/cpe-api:staging
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Migration image (same Dockerfile, keeps the Prisma CLI).
+      - name: Build & push cpe-migrate
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/api.Dockerfile
+          target: migrate
+          push: true
+          tags: ${{ steps.prefix.outputs.value }}/cpe-migrate:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Admin image. NEXT_PUBLIC_API_BASE_URL is baked in at build time.
+      - name: Build & push cpe-admin
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/admin.Dockerfile
+          target: runtime
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_BASE_URL=${{ vars.STAGING_API_BASE_URL }}
+          tags: |
+            ${{ steps.prefix.outputs.value }}/cpe-admin:${{ steps.meta.outputs.tag }}
+            ${{ steps.prefix.outputs.value }}/cpe-admin:staging
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Staging: migrate (separate, gated step) then roll out. Auto on every merge.
+  # ---------------------------------------------------------------------------
+  deploy-staging:
+    name: Deploy → staging
+    needs: build-push
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure cluster access
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > "$HOME/.kube/config"
+
+      # STEP 1 — migrations, as their own reviewed step. Wait for success BEFORE any new
+      # app code serves traffic; a failed migration aborts the deploy here.
+      - name: Run database migrations
+        run: |
+          PREFIX=$(echo '${{ env.IMAGE_PREFIX }}' | tr '[:upper:]' '[:lower:]')
+          sed -e "s#ghcr.io/OWNER/cpe-migrate:REPLACE_WITH_RELEASE_TAG#${PREFIX}/cpe-migrate:${{ needs.build-push.outputs.tag }}#" \
+            infra/k8s/base/migrate-job.yaml > /tmp/migrate.yaml
+          kubectl delete job cpe-migrate -n cpe --ignore-not-found
+          kubectl apply -f /tmp/migrate.yaml
+          kubectl wait --for=condition=complete --timeout=300s job/cpe-migrate -n cpe \
+            || { kubectl logs job/cpe-migrate -n cpe; echo "Migration failed"; exit 1; }
+
+      # STEP 2 — roll out the app at the just-built immutable tag. Render the overlay, then
+      # rewrite the placeholder image refs (owner + whatever tag the overlay carried) to the
+      # exact sha we built, in ONE apply — so pods never briefly try to pull a placeholder tag.
+      - name: Deploy
+        run: |
+          PREFIX=$(echo '${{ env.IMAGE_PREFIX }}' | tr '[:upper:]' '[:lower:]')
+          TAG=${{ needs.build-push.outputs.tag }}
+          kubectl kustomize infra/k8s/overlays/staging \
+            | sed -E "s#ghcr.io/OWNER/cpe-api:[A-Za-z0-9_.-]+#${PREFIX}/cpe-api:${TAG}#g; \
+                      s#ghcr.io/OWNER/cpe-admin:[A-Za-z0-9_.-]+#${PREFIX}/cpe-admin:${TAG}#g" \
+            | kubectl apply -f -
+
+      - name: Wait for rollout
+        run: |
+          kubectl -n cpe rollout status deployment/cpe-api --timeout=180s
+          kubectl -n cpe rollout status deployment/cpe-worker --timeout=180s
+          kubectl -n cpe rollout status deployment/cpe-admin --timeout=180s
+
+  # ---------------------------------------------------------------------------
+  # Production: identical shape, gated by the `production` GitHub Environment,
+  # which has REQUIRED REVIEWERS — the run pauses here until a human approves.
+  # ---------------------------------------------------------------------------
+  deploy-production:
+    name: Deploy → production (manual approval)
+    needs: [build-push, deploy-staging]
+    runs-on: ubuntu-latest
+    environment: production # <- configure required reviewers on this environment in repo settings
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure cluster access
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > "$HOME/.kube/config"
+
+      - name: Run database migrations
+        run: |
+          PREFIX=$(echo '${{ env.IMAGE_PREFIX }}' | tr '[:upper:]' '[:lower:]')
+          sed -e "s#ghcr.io/OWNER/cpe-migrate:REPLACE_WITH_RELEASE_TAG#${PREFIX}/cpe-migrate:${{ needs.build-push.outputs.tag }}#" \
+            infra/k8s/base/migrate-job.yaml > /tmp/migrate.yaml
+          kubectl delete job cpe-migrate -n cpe --ignore-not-found
+          kubectl apply -f /tmp/migrate.yaml
+          kubectl wait --for=condition=complete --timeout=300s job/cpe-migrate -n cpe \
+            || { kubectl logs job/cpe-migrate -n cpe; echo "Migration failed"; exit 1; }
+
+      - name: Deploy
+        run: |
+          PREFIX=$(echo '${{ env.IMAGE_PREFIX }}' | tr '[:upper:]' '[:lower:]')
+          TAG=${{ needs.build-push.outputs.tag }}
+          kubectl kustomize infra/k8s/overlays/production \
+            | sed -E "s#ghcr.io/OWNER/cpe-api:[A-Za-z0-9_.-]+#${PREFIX}/cpe-api:${TAG}#g; \
+                      s#ghcr.io/OWNER/cpe-admin:[A-Za-z0-9_.-]+#${PREFIX}/cpe-admin:${TAG}#g" \
+            | kubectl apply -f -
+
+      - name: Wait for rollout
+        run: |
+          kubectl -n cpe rollout status deployment/cpe-api --timeout=300s
+          kubectl -n cpe rollout status deployment/cpe-worker --timeout=300s
+          kubectl -n cpe rollout status deployment/cpe-admin --timeout=300s

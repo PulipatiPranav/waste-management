@@ -1,0 +1,25 @@
+# Fastlane lanes for iOS. Auth is via an App Store Connect API key (env vars / CI secrets),
+# not a personal Apple ID password. The GitHub workflow builds the IPA, then a
+# MANUALLY-APPROVED job runs `fastlane ios beta` to upload it to TestFlight.
+
+default_platform(:ios)
+
+platform :ios do
+  desc "Upload the IPA to TestFlight for INTERNAL testers"
+  lane :beta do
+    api_key = app_store_connect_api_key(
+      key_id: ENV["ASC_KEY_ID"],
+      issuer_id: ENV["ASC_ISSUER_ID"],
+      key_content: ENV["ASC_KEY_CONTENT"], # base64 of the .p8
+      is_key_content_base64: true
+    )
+    upload_to_testflight(
+      api_key: api_key,
+      ipa: ENV["IPA_PATH"] || "../build/ios/ipa/cpe_mobile.ipa",
+      # Don't block the job waiting for Apple to finish processing; internal testers only,
+      # so no external-beta review is triggered.
+      skip_waiting_for_build_processing: true,
+      distribute_external: false
+    )
+  end
+end
