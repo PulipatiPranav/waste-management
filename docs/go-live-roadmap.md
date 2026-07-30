@@ -7,6 +7,9 @@ up the accounts, infrastructure and store listings around them.
 Ordered by dependency. **Steps A0 and E3 are the two hard blockers** — one engineering, one legal —
 so start those first; everything else is provisioning.
 
+> For concrete, copy-pasteable commands and click-paths for every step below, see the companion
+> **[setup guide](setup-guide.md)**.
+
 Legend: 🧑‍💻 code change · ☁️ infra/account · 🔑 secret · 📱 store · ⚖️ legal
 
 ---
