@@ -23,6 +23,7 @@ import {
 import { PrismaDeliveryRepository } from './infrastructure/persistence/prisma-delivery.repository';
 import { DeliveryGateway } from './infrastructure/realtime/delivery.gateway';
 import { LocalStorageProvider } from './infrastructure/storage/local-storage.provider';
+import { S3StorageProvider } from './infrastructure/storage/s3-storage.provider';
 import { AdminDeliveryController } from './presentation/admin-delivery.controller';
 import { PartnerDeliveryController } from './presentation/partner-delivery.controller';
 
@@ -59,7 +60,17 @@ import { PartnerDeliveryController } from './presentation/partner-delivery.contr
 
   providers: [
     { provide: DELIVERY_REPOSITORY, useClass: PrismaDeliveryRepository },
-    { provide: STORAGE_PROVIDER, useClass: LocalStorageProvider },
+    // Picked at boot from STORAGE_PROVIDER. Constructs only the ONE selected class —
+    // S3StorageProvider validates its config in the constructor and throws if it isn't
+    // set, so it must never be built when 'local' is the active provider.
+    {
+      provide: STORAGE_PROVIDER,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<Env, true>) =>
+        config.get('STORAGE_PROVIDER', { infer: true }) === 's3'
+          ? new S3StorageProvider(config)
+          : new LocalStorageProvider(config),
+    },
 
     // The gateway IS the event publisher. The use case only ever sees the port, so it
     // has no idea a WebSocket exists — and a dead socket cannot fail a delivery.

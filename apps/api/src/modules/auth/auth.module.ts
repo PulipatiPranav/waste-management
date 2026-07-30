@@ -31,6 +31,7 @@ import { PrismaRefreshTokenRepository } from './infrastructure/persistence/prism
 import { RedisRateLimiter } from './infrastructure/rate-limit/redis-rate.limiter';
 import { RedisThrottlerStorage } from './infrastructure/rate-limit/redis-throttler.storage';
 import { ConsoleSmsProvider } from './infrastructure/sms/console-sms.provider';
+import { Msg91SmsProvider } from './infrastructure/sms/msg91-sms.provider';
 import { SystemClock } from './infrastructure/system-clock';
 import { AuthController } from './presentation/auth.controller';
 import { JwtAuthGuard } from './presentation/guards/jwt-auth.guard';
@@ -85,7 +86,19 @@ import { RolesGuard } from './presentation/guards/roles.guard';
     // --- Ports -> adapters --------------------------------------------------
     { provide: OTP_CHALLENGE_REPOSITORY, useClass: PrismaOtpChallengeRepository },
     { provide: REFRESH_TOKEN_REPOSITORY, useClass: PrismaRefreshTokenRepository },
-    { provide: SMS_PROVIDER, useClass: ConsoleSmsProvider },
+    // Picked at boot from SMS_PROVIDER, not hardcoded — this is the ONE place that
+    // decides which SmsProvider the whole app gets. Swapping providers again later is a
+    // one-line change here, never a use-case change. Constructs only the ONE selected
+    // class (rather than registering both as providers) so an unconfigured provider
+    // that validates in its constructor never runs when it isn't the one in use.
+    {
+      provide: SMS_PROVIDER,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<Env, true>) =>
+        config.get('SMS_PROVIDER', { infer: true }) === 'msg91'
+          ? new Msg91SmsProvider(config)
+          : new ConsoleSmsProvider(),
+    },
     { provide: SECRET_HASHER, useClass: Argon2SecretHasher },
     { provide: TOKEN_HASHER, useClass: Sha256TokenHasher },
     { provide: TOKEN_ISSUER, useClass: JwtTokenIssuer },

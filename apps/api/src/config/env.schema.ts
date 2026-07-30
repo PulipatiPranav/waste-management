@@ -107,11 +107,21 @@ export const envSchema = z.object({
   OTP_IP_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
 
   /**
-   * `console` prints the OTP to the log for local development.
-   * It is REFUSED in production (see the superRefine below) — shipping it would mean
-   * no user ever receives a code, and every code is printed into the log stream.
+   * `console` prints the OTP to the log for local development. `msg91` sends a real SMS
+   * via MSG91's Flow API. `console` is REFUSED in production (see the superRefine below)
+   * — shipping it would mean no user ever receives a code, and every code is printed
+   * into the log stream.
    */
-  SMS_PROVIDER: z.enum(['console']).default('console'),
+  SMS_PROVIDER: z.enum(['console', 'msg91']).default('console'),
+
+  /** MSG91 auth key (dashboard → API → Auth Key). Required when SMS_PROVIDER=msg91. */
+  MSG91_AUTH_KEY: z.string().optional(),
+
+  /** The 6-character DLT-registered sender id, e.g. `ANVAYA`. */
+  MSG91_SENDER_ID: z.string().optional(),
+
+  /** The MSG91 Flow id for the OTP template (DLT-registered). */
+  MSG91_DLT_TEMPLATE_ID: z.string().optional(),
 
   // --- Delivery (Phase 3) ---------------------------------------------------
 
@@ -119,12 +129,23 @@ export const envSchema = z.object({
   PUBLIC_BASE_URL: z.string().url().default('http://localhost:3000'),
 
   /**
-   * `local` writes delivery photos to disk. Dev only — REFUSED in production (see the
+   * `local` writes delivery photos to disk — dev only, REFUSED in production (see the
    * superRefine below), where the files would vanish with the pod and there would be no
-   * replication, no lifecycle policy and no way to answer a delivery dispute.
+   * replication, no lifecycle policy and no way to answer a delivery dispute. `s3` writes
+   * to any S3-compatible bucket (AWS S3, Cloudflare R2, DigitalOcean Spaces, ...).
    */
-  STORAGE_PROVIDER: z.enum(['local']).default('local'),
+  STORAGE_PROVIDER: z.enum(['local', 's3']).default('local'),
   STORAGE_LOCAL_DIR: z.string().default('./.storage'),
+
+  /** S3-compatible endpoint. For Cloudflare R2: `https://<account-id>.r2.cloudflarestorage.com`. */
+  S3_ENDPOINT: z.string().url().optional(),
+
+  /** R2 has no real regions; `auto` is correct there. Set a real region for AWS S3. */
+  S3_REGION: z.string().default('auto'),
+
+  S3_BUCKET: z.string().optional(),
+  S3_ACCESS_KEY_ID: z.string().optional(),
+  S3_SECRET_ACCESS_KEY: z.string().optional(),
 
   /** Proof photos show the inside of a customer's doorway. Keep the window short. */
   STORAGE_SIGNED_URL_TTL_SECONDS: z.coerce.number().int().positive().default(300),
@@ -285,8 +306,32 @@ export const envSchemaWithRules = envSchema.superRefine((env, ctx) => {
       path: ['SMS_PROVIDER'],
       message:
         'The console SMS provider cannot be used in production: no user would ever receive a code, ' +
-        'and every OTP would be written to the log stream in plaintext. Implement a real SmsProvider ' +
-        '(MSG91/Twilio) and add it to the SMS_PROVIDER enum before deploying.',
+        'and every OTP would be written to the log stream in plaintext. Set SMS_PROVIDER=msg91 (with ' +
+        'MSG91_AUTH_KEY/SENDER_ID/DLT_TEMPLATE_ID) before deploying.',
+    });
+  }
+
+  if (env.SMS_PROVIDER === 'msg91' && env.MSG91_AUTH_KEY === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['MSG91_AUTH_KEY'],
+      message: 'MSG91_AUTH_KEY is required when SMS_PROVIDER=msg91.',
+    });
+  }
+
+  if (env.SMS_PROVIDER === 'msg91' && env.MSG91_SENDER_ID === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['MSG91_SENDER_ID'],
+      message: 'MSG91_SENDER_ID is required when SMS_PROVIDER=msg91.',
+    });
+  }
+
+  if (env.SMS_PROVIDER === 'msg91' && env.MSG91_DLT_TEMPLATE_ID === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['MSG91_DLT_TEMPLATE_ID'],
+      message: 'MSG91_DLT_TEMPLATE_ID is required when SMS_PROVIDER=msg91.',
     });
   }
 
@@ -296,9 +341,27 @@ export const envSchemaWithRules = envSchema.superRefine((env, ctx) => {
       path: ['STORAGE_PROVIDER'],
       message:
         'Local disk storage cannot be used in production: proof-of-delivery photos would vanish ' +
-        'with the pod, leaving no way to settle a delivery dispute. Implement an S3-compatible ' +
-        'StorageProvider and add it to the STORAGE_PROVIDER enum before deploying.',
+        'with the pod, leaving no way to settle a delivery dispute. Set STORAGE_PROVIDER=s3 (with ' +
+        'S3_ENDPOINT/BUCKET/ACCESS_KEY_ID/SECRET_ACCESS_KEY) before deploying.',
     });
+  }
+
+  if (env.STORAGE_PROVIDER === 's3') {
+    const required = [
+      'S3_ENDPOINT',
+      'S3_BUCKET',
+      'S3_ACCESS_KEY_ID',
+      'S3_SECRET_ACCESS_KEY',
+    ] as const;
+    for (const key of required) {
+      if (env[key] === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [key],
+          message: `${key} is required when STORAGE_PROVIDER=s3.`,
+        });
+      }
+    }
   }
 
   if (env.OTEL_ENABLED && env.OTEL_EXPORTER_OTLP_ENDPOINT === undefined) {

@@ -27,6 +27,8 @@
     "gen:types": "pnpm openapi:json && pnpm --filter @cpe/shared-types exec openapi-typescript ../../apps/api/openapi.json -o ./src/generated/api.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1097.0",
+    "@aws-sdk/s3-request-presigner": "^3.1097.0",
     "@cpe/shared-types": "workspace:*",
     "@nestjs/bullmq": "^11.0.4",
     "@nestjs/common": "^11.1.6",
