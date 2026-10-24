@@ -1,4 +1,7 @@
-# Circular Paper Economy
+# Circular Paper Economy — engineering notes
+
+> The detailed, phase-by-phase design log: what was built, why, and the known gaps at each
+> step. For the overview, live demo and screenshots, see the [README](../README.md).
 
 Newspaper subscription → scheduled recyclable paper pickup → digital weighing →
 cashback → recycling partner handoff → sustainability reporting → marketplace.
@@ -11,13 +14,13 @@ cashback → recycling partner handoff → sustainability reporting → marketpl
 > step** before any rollout. A **Flutter pipeline** builds signed Android/iOS artifacts on a
 > `mobile-v*` tag and promotes them to the store **internal tracks** behind a manual gate. **Secrets
 > never touch the repo** (External Secrets Operator; the env schema fails fast without real ones).
-> Operations are documented in the **[runbook](docs/runbook.md)** — deploy, roll back, check health,
+> Operations are documented in the **[runbook](runbook.md)** — deploy, roll back, check health,
 > and what to do when the wallet-credit job pages you at 2am.
 >
 > _Prior phase (14 — observability & security): structured JSON logs with end-to-end correlation
 > ids, OpenTelemetry traces (HTTP/DB/BullMQ), a Prometheus `/metrics` endpoint, Sentry across all
 > three apps, and a clean OWASP API Top 10 pass but for the upload hardening it fixed. See
-> [`docs/phase-14-production-readiness.md`](docs/phase-14-production-readiness.md)._
+> [`docs/phase-14-production-readiness.md`](phase-14-production-readiness.md)._
 >
 > ⚠️ **Read [Regulatory: the wallet is not a licensed instrument](#regulatory-the-wallet-is-not-a-licensed-instrument) before piloting with real money.**
 >
@@ -1058,7 +1061,7 @@ test (a partner lands on the partner shell, a customer cannot).
 
 The "before infra/deployment" phase: make the system **debuggable** and prove it's **safe**. Full
 write-up — verdicts, the one fix, load-test analysis, and the risks still needing a decision — is in
-[`docs/phase-14-production-readiness.md`](docs/phase-14-production-readiness.md).
+[`docs/phase-14-production-readiness.md`](phase-14-production-readiness.md).
 
 **Observability.** Everything below is **off unless configured**, so local dev and the test suite
 need no collector, no Prometheus and no DSN:
@@ -1093,7 +1096,7 @@ the pass is mostly verification with **one real fix**:
   query is a parameterised Prisma tagged template; no `*Unsafe` anywhere), CORS (allowlist, never
   `*`), and secret logging (OTP logs use masked phones; header redaction added).
 
-**Load tests** ([`apps/api/load/`](apps/api/load/README.md)) — k6 scripts for pickup completion and
+**Load tests** ([`apps/api/load/`](../apps/api/load/README.md)) — k6 scripts for pickup completion and
 wallet credit, the highest-consistency-risk paths. They run against staging (not CI); the findings
 doc explains where each breaks and why — pool saturation for the fan-out paths, and the per-wallet
 `SELECT … FOR UPDATE` row lock as a **deliberate** ceiling on same-wallet write rate (the lost-update
@@ -1104,8 +1107,8 @@ correlation/redaction config, alongside the existing suites (all green).
 
 ## Deployment (Phase 15)
 
-Everything needed to ship the platform, in [`infra/`](infra/) and [`.github/workflows/`](.github/workflows/).
-The [runbook](docs/runbook.md) covers day-2 operations.
+Everything needed to ship the platform, in [`infra/`](../infra/) and [`.github/workflows/`](../.github/workflows/).
+The [runbook](runbook.md) covers day-2 operations.
 
 **Kubernetes (Kustomize, base + staging/production overlays):**
 
@@ -1117,13 +1120,13 @@ The [runbook](docs/runbook.md) covers day-2 operations.
 - The **API and worker run the same image**, split purely by config — so the nightly jobs schedule
   exactly once instead of on every replica (the old multi-replica-cron issue, now fixed).
 
-**CI/CD ([`deploy.yml`](.github/workflows/deploy.yml)):** on merge to `main`, build immutable images
+**CI/CD ([`deploy.yml`](../.github/workflows/deploy.yml)):** on merge to `main`, build immutable images
 (tagged by commit sha) → push to GHCR → **auto-deploy staging** → **pause at the `production`
 approval gate** → deploy production. `prisma migrate deploy` runs as a **separate Job that must
 succeed before any rollout** — a bad migration stops the release before new code serves traffic, and
 `migrate deploy` only applies reviewed migration files (never generates or resets).
 
-**Mobile ([`mobile-release.yml`](.github/workflows/mobile-release.yml)):** a `mobile-v*` tag builds a
+**Mobile ([`mobile-release.yml`](../.github/workflows/mobile-release.yml)):** a `mobile-v*` tag builds a
 signed **AAB** and **IPA**; a **manual approval gate** then promotes them (via Fastlane) to the Play
 **internal track** and **TestFlight** — as drafts, never straight to production.
 
@@ -1159,14 +1162,14 @@ CI/CD to a cluster), and this pass does **not** short-circuit those. What that m
   app→API→logs and secrets redacted, OpenTelemetry traces (HTTP/DB/BullMQ), a Prometheus
   `/metrics` endpoint, and Sentry across all three apps — inert until configured.
 - **Security-audited** (Phase 14): a full OWASP API Top 10 pass (see
-  [`docs/phase-14-production-readiness.md`](docs/phase-14-production-readiness.md)) came back clean
+  [`docs/phase-14-production-readiness.md`](phase-14-production-readiness.md)) came back clean
   but for the upload hardening it fixed; SQLi is impossible (all raw queries are parameterised
   tagged templates), IDOR is closed (ownership from token everywhere), auth/payment paths are
   rate-limited and idempotent.
 - **Deployable** (Phase 15): Kustomize manifests (API, worker, Redis, admin) with probes, limits,
   HPAs and PDBs; CI/CD that builds immutable images, auto-deploys staging, gates production behind a
   manual approval, and runs migrations as a separate reviewed step; a Flutter build+promote pipeline;
-  External-Secrets-based secret management; and a [runbook](docs/runbook.md). The nightly jobs now
+  External-Secrets-based secret management; and a [runbook](runbook.md). The nightly jobs now
   run on a single worker Deployment, not every replica.
 
 **NOT ready — do this before real users or real money:**
