@@ -5,6 +5,15 @@ import { useState } from 'react';
 
 import { api, ApiError } from '@/lib/api/client';
 import type { LedgerEntry, Reconciliation, Wallet } from '@/lib/api/types';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Support usually has the caller's phone number, not their id — accept either. */
+async function resolveUserId(input: string): Promise<string> {
+  if (UUID.test(input)) return input;
+  const user = await api.get<{ id: string }>(`/users/by-phone?phone=${encodeURIComponent(input)}`);
+  return user.id;
+}
 import { formatDateTime } from '@/lib/format';
 import { Card, EmptyNote, ErrorNote, Spinner, StatusBadge, Table } from './ui';
 
@@ -19,6 +28,7 @@ import { Card, EmptyNote, ErrorNote, Spinner, StatusBadge, Table } from './ui';
 export function WalletOversight({ initialUserId = '' }: { initialUserId?: string }) {
   const [input, setInput] = useState(initialUserId);
   const [userId, setUserId] = useState(initialUserId);
+  const [lookupError, setLookupError] = useState<string | null>(null);
 
   const enabled = userId.length > 0;
 
@@ -52,15 +62,27 @@ export function WalletOversight({ initialUserId = '' }: { initialUserId?: string
           className="row"
           onSubmit={(e) => {
             e.preventDefault();
-            setUserId(input.trim());
+            setLookupError(null);
+            resolveUserId(input.trim())
+              .then(setUserId)
+              .catch((err: unknown) => {
+                setUserId('');
+                setLookupError(
+                  err instanceof ApiError && err.status === 404
+                    ? 'No user with that phone number.'
+                    : err instanceof Error
+                      ? err.message
+                      : 'Lookup failed.',
+                );
+              });
           }}
         >
           <div className="field" style={{ flex: 1, marginBottom: 0 }}>
-            <label htmlFor="wallet-user-id">Customer user id</label>
+            <label htmlFor="wallet-user-id">Customer phone number or user id</label>
             <input
               id="wallet-user-id"
               className="input"
-              placeholder="00000000-0000-0000-0000-000000000000"
+              placeholder="+91 98765 43210 or 00000000-0000-0000-0000-000000000000"
               value={input}
               onChange={(e) => setInput(e.target.value)}
             />
@@ -71,8 +93,12 @@ export function WalletOversight({ initialUserId = '' }: { initialUserId?: string
         </form>
       </Card>
 
-      {!enabled && (
-        <EmptyNote>Enter a customer&rsquo;s user id to see their wallet history.</EmptyNote>
+      {lookupError !== null && <p className="error">{lookupError}</p>}
+
+      {!enabled && lookupError === null && (
+        <EmptyNote>
+          Enter a customer&rsquo;s phone number or user id to see their wallet history.
+        </EmptyNote>
       )}
 
       {enabled && notFound !== null && <p className="error">{notFound}</p>}

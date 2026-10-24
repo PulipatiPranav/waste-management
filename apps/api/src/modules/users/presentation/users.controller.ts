@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Query } from '@nestjs/common';
+import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 import {
   type AuthenticatedUser,
@@ -7,6 +7,7 @@ import {
 } from '@/modules/auth/presentation/decorators/current-user.decorator';
 import { Roles } from '@/modules/auth/presentation/decorators/roles.decorator';
 import { type User } from '../domain/entities/user';
+import { FindUserByPhoneUseCase } from '../application/use-cases/find-user-by-phone.use-case';
 import { GetProfileUseCase } from '../application/use-cases/get-profile.use-case';
 import { UpdateProfileUseCase } from '../application/use-cases/update-profile.use-case';
 import { UpdateProfileDto, UserProfileDto } from './dto/user.dto';
@@ -18,6 +19,7 @@ export class UsersController {
   constructor(
     private readonly getProfile: GetProfileUseCase,
     private readonly updateProfile: UpdateProfileUseCase,
+    private readonly findByPhone: FindUserByPhoneUseCase,
   ) {}
 
   /**
@@ -49,6 +51,19 @@ export class UsersController {
     });
 
     return this.toDto(user);
+  }
+
+  /**
+   * Support lookup by phone — what a customer gives when they call in. Declared before
+   * `:id` so the router does not try to parse `by-phone` as a UUID.
+   */
+  @Get('by-phone')
+  @Roles('OPS_STAFF', 'SUPER_ADMIN')
+  @ApiOperation({ summary: 'Find a user by phone number (staff only)' })
+  @ApiQuery({ name: 'phone', example: '+919876543210' })
+  @ApiOkResponse({ type: UserProfileDto })
+  async byPhone(@Query('phone') phone = ''): Promise<UserProfileDto> {
+    return this.toDto(await this.findByPhone.execute(phone));
   }
 
   /** Support lookup. Guarded, and every call will be audit-logged in Phase 9. */

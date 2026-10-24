@@ -46,6 +46,7 @@ describe('WalletOversight — the "why does this wallet say ₹X" support workfl
       if (path === `/admin/wallet/users/${USER_ID}`) return Promise.resolve(WALLET);
       if (path === `/admin/wallet/users/${USER_ID}/transactions`) return Promise.resolve(TXNS);
       if (path === `/admin/wallet/users/${USER_ID}/reconcile`) return Promise.resolve(RECONCILE);
+      if (path === '/users/by-phone?phone=%2B919876543210') return Promise.resolve({ id: USER_ID });
       return Promise.reject(new Error(`unexpected path ${path}`));
     });
   });
@@ -60,7 +61,7 @@ describe('WalletOversight — the "why does this wallet say ₹X" support workfl
     const user = userEvent.setup();
     renderWithQuery(<WalletOversight />);
 
-    await user.type(screen.getByLabelText(/customer user id/i), USER_ID);
+    await user.type(screen.getByLabelText(/customer phone number or user id/i), USER_ID);
     await user.click(screen.getByRole('button', { name: /look up/i }));
 
     // The ledger entry and its note render — the answer to "why does it say ₹480".
@@ -84,9 +85,33 @@ describe('WalletOversight — the "why does this wallet say ₹X" support workfl
 
     const user = userEvent.setup();
     renderWithQuery(<WalletOversight />);
-    await user.type(screen.getByLabelText(/customer user id/i), USER_ID);
+    await user.type(screen.getByLabelText(/customer phone number or user id/i), USER_ID);
     await user.click(screen.getByRole('button', { name: /look up/i }));
 
     expect(await screen.findByText(/no wallet found/i)).toBeInTheDocument();
+  });
+
+  it('resolves a phone number to the user before looking up the wallet', async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<WalletOversight />);
+
+    await user.type(screen.getByLabelText(/customer phone number or user id/i), '+919876543210');
+    await user.click(screen.getByRole('button', { name: /look up/i }));
+
+    expect(await screen.findByText('Pickup #42')).toBeInTheDocument();
+    expect(mockApi.get).toHaveBeenCalledWith('/users/by-phone?phone=%2B919876543210');
+    expect(mockApi.get).toHaveBeenCalledWith(`/admin/wallet/users/${USER_ID}`);
+  });
+
+  it('says so when no user has that phone number', async () => {
+    const { ApiError } = await import('@/lib/api/client');
+    mockApi.get.mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'not found'));
+
+    const user = userEvent.setup();
+    renderWithQuery(<WalletOversight />);
+    await user.type(screen.getByLabelText(/customer phone number or user id/i), '9000000999');
+    await user.click(screen.getByRole('button', { name: /look up/i }));
+
+    expect(await screen.findByText(/no user with that phone number/i)).toBeInTheDocument();
   });
 });

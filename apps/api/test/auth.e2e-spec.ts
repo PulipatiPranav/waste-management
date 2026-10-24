@@ -324,6 +324,35 @@ describe('Auth (e2e)', () => {
         .set('Authorization', `Bearer ${accessToken}`)
         .expect(200);
     });
+
+    it('lets staff, and only staff, look a user up by phone', async () => {
+      const customer = await login(phoneFor(43));
+      const target = phoneFor(44);
+      await login(target);
+
+      await request(app.getHttpServer())
+        .get('/api/v1/users/by-phone')
+        .query({ phone: target })
+        .set('Authorization', `Bearer ${customer.accessToken}`)
+        .expect(403);
+
+      const staffPhone = phoneFor(45);
+      const staff = await login(staffPhone);
+      await prisma.user.update({ where: { phone: staffPhone }, data: { role: 'OPS_STAFF' } });
+
+      const found = await request(app.getHttpServer())
+        .get('/api/v1/users/by-phone')
+        .query({ phone: target })
+        .set('Authorization', `Bearer ${staff.accessToken}`)
+        .expect(200);
+      expect(found.body).toMatchObject({ phone: target });
+
+      await request(app.getHttpServer())
+        .get('/api/v1/users/by-phone')
+        .query({ phone: phoneFor(46) })
+        .set('Authorization', `Bearer ${staff.accessToken}`)
+        .expect(404);
+    });
   });
 
   describe('staff password login', () => {
