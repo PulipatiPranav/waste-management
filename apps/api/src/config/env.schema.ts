@@ -114,6 +114,16 @@ export const envSchema = z.object({
    */
   SMS_PROVIDER: z.enum(['console', 'msg91']).default('console'),
 
+  /**
+   * Public-demo switch. When true, every OTP is `000000` (still hashed, still expiring,
+   * still rate-limited) so visitors can sign in to the hosted demo without a real phone.
+   * REFUSED in production (see the superRefine below): it would let anyone log in as anyone.
+   */
+  DEMO_MODE: z
+    .string()
+    .default('false')
+    .transform((value) => value === 'true'),
+
   /** MSG91 auth key (dashboard → API → Auth Key). Required when SMS_PROVIDER=msg91. */
   MSG91_AUTH_KEY: z.string().optional(),
 
@@ -371,6 +381,16 @@ export const envSchemaWithRules = envSchema.superRefine((env, ctx) => {
       message:
         'OTEL_EXPORTER_OTLP_ENDPOINT is required when OTEL_ENABLED=true: tracing is on but there is ' +
         'nowhere to export spans to. Point it at the collector, e.g. http://otel-collector:4318.',
+    });
+  }
+
+  if (env.NODE_ENV === 'production' && env.DEMO_MODE) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['DEMO_MODE'],
+      message:
+        'DEMO_MODE cannot be used in production: every OTP becomes a known constant, so anyone ' +
+        'could sign in as any phone number.',
     });
   }
 

@@ -24,6 +24,7 @@ import { SMS_PROVIDER } from './domain/ports/sms-provider.port';
 import { TOKEN_ISSUER } from './domain/ports/token-issuer.port';
 import { Argon2SecretHasher } from './infrastructure/crypto/argon2-secret.hasher';
 import { CryptoOtpCodeGenerator } from './infrastructure/crypto/crypto-otp-code.generator';
+import { FixedOtpCodeGenerator } from './infrastructure/crypto/fixed-otp-code.generator';
 import { JwtTokenIssuer } from './infrastructure/crypto/jwt-token.issuer';
 import { Sha256TokenHasher } from './infrastructure/crypto/sha256-token.hasher';
 import { PrismaOtpChallengeRepository } from './infrastructure/persistence/prisma-otp-challenge.repository';
@@ -102,7 +103,15 @@ import { RolesGuard } from './presentation/guards/roles.guard';
     { provide: SECRET_HASHER, useClass: Argon2SecretHasher },
     { provide: TOKEN_HASHER, useClass: Sha256TokenHasher },
     { provide: TOKEN_ISSUER, useClass: JwtTokenIssuer },
-    { provide: OTP_CODE_GENERATOR, useClass: CryptoOtpCodeGenerator },
+    // DEMO_MODE (never allowed in production) swaps in a constant code for the hosted demo.
+    {
+      provide: OTP_CODE_GENERATOR,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<Env, true>) =>
+        config.get('DEMO_MODE', { infer: true })
+          ? new FixedOtpCodeGenerator()
+          : new CryptoOtpCodeGenerator(),
+    },
     { provide: RATE_LIMITER, useClass: RedisRateLimiter },
     { provide: CLOCK, useClass: SystemClock },
 
