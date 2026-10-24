@@ -85,6 +85,8 @@ jobs:
       REDIS_HOST: localhost
       REDIS_PORT: 6379
       NODE_ENV: test
+      # Throwaway value for the test database only; the API refuses to boot without one.
+      JWT_ACCESS_SECRET: ci-only-test-secret-not-used-anywhere-real-0123456789
 
     steps:
       - uses: actions/checkout@v4
