@@ -102,6 +102,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The admin and API import @cpe/shared-types from its built output (dist/ is
+      # gitignored), so it must exist before lint and typecheck can resolve those types.
+      - name: Build shared types
+        run: pnpm --filter @cpe/shared-types build
+
       - name: Validate Prisma schema
         run: pnpm --filter @cpe/api exec prisma validate
 

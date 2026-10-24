@@ -45,7 +45,16 @@ CMD ["node_modules/.bin/prisma", "migrate", "deploy"]
 # ---- prune ------------------------------------------------------------------
 # Strip dev dependencies (incl. the Prisma CLI) from the store the runtime copies.
 FROM build AS prune
-RUN pnpm --filter @cpe/api... --filter . prune --prod
+# `pnpm prune` takes no --filter in pnpm 11, so reinstall production deps only. That
+# replaces node_modules, including the generated Prisma client (and the CLI that made it),
+# so the generated client is set aside first and put back into the fresh @prisma/client.
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    cp -rL "$(find node_modules/.pnpm -maxdepth 3 -type d -path '*/@prisma+client@*/node_modules/.prisma' | head -1)" /tmp/prisma-generated \
+ && CI=true pnpm install --frozen-lockfile --prod --ignore-scripts --filter @cpe/api... --filter . \
+ && for dir in node_modules/.pnpm/@prisma+client@*/node_modules; do \
+      rm -rf "$dir/.prisma" && cp -r /tmp/prisma-generated "$dir/.prisma"; \
+    done \
+ && rm -rf /tmp/prisma-generated
 
 # ---- runtime ----------------------------------------------------------------
 FROM node:22-alpine AS runtime
