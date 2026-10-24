@@ -23,6 +23,7 @@
     "prisma:studio": "prisma studio",
     "prisma:validate": "prisma validate",
     "db:seed": "prisma db seed",
+    "seed:demo": "ts-node -r tsconfig-paths/register scripts/seed-demo.ts",
     "openapi:json": "ts-node -r tsconfig-paths/register scripts/generate-openapi.ts",
     "gen:types": "pnpm openapi:json && pnpm --filter @cpe/shared-types exec openapi-typescript ../../apps/api/openapi.json -o ./src/generated/api.ts"
   },

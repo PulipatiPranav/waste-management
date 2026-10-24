@@ -18,3 +18,12 @@ export const SOCKET_ORIGIN = (() => {
     return 'http://localhost:3000';
   }
 })();
+
+/**
+ * Shown on the login page of the hosted public demo only. These are the seeded demo
+ * account's credentials (apps/api/scripts/seed-demo.ts), not a secret.
+ */
+export const DEMO_CREDENTIALS =
+  process.env.NEXT_PUBLIC_DEMO_MODE === 'true'
+    ? { email: 'demo@circularpaper.app', password: 'demo-password' }
+    : null;

@@ -107,6 +107,10 @@ jobs:
   deploy-staging:
     name: Deploy → staging
     needs: build-push
+    # Off until a cluster exists: set the repo variable K8S_DEPLOY_ENABLED=true (Settings →
+    # Secrets and variables → Actions → Variables) once KUBE_CONFIG_STAGING is in place.
+    # Without this guard every push to main ends in a red ✗ for want of a kubeconfig.
+    if: vars.K8S_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment: staging
     steps:

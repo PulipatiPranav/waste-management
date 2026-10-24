@@ -1,0 +1,94 @@
+# Render Blueprint for the PUBLIC DEMO (free tier): API + admin console + Postgres + Redis.
+#
+# Deploy: Render dashboard → New → Blueprint → pick this repo. Nothing to fill in.
+#
+# This is a demo, not the production path. It runs with NODE_ENV=development so the
+# in-process fakes (console SMS, fake payments/push, local disk) are allowed, and with
+# DEMO_MODE=true so every OTP is 000000. Production deploys via infra/k8s instead, where
+# the env schema refuses all of the above. See docs/deploy-demo.md.
+
+databases:
+  - name: cpe-demo-db
+    plan: free
+    region: singapore
+    databaseName: cpe
+    user: cpe
+
+services:
+  - type: keyvalue
+    name: cpe-demo-redis
+    plan: free
+    region: singapore
+    # BullMQ requires noeviction: an evicted job key is a silently lost job.
+    maxmemoryPolicy: noeviction
+    ipAllowList: [] # internal connections only
+
+  - type: web
+    name: circular-paper-api
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./infra/render/api.Dockerfile
+    dockerContext: .
+    healthCheckPath: /health/ready
+    envVars:
+      - key: NODE_ENV
+        value: development
+      - key: DEMO_MODE
+        value: "true"
+      - key: PORT
+        value: "3000"
+      - key: LOG_LEVEL
+        value: info
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cpe-demo-db
+          property: connectionString
+      - key: REDIS_HOST
+        fromService:
+          type: keyvalue
+          name: cpe-demo-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: keyvalue
+          name: cpe-demo-redis
+          property: port
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: PAYMENT_WEBHOOK_SECRET
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: https://circular-paper-admin.onrender.com
+      - key: PUBLIC_BASE_URL
+        value: https://circular-paper-api.onrender.com
+      - key: SWAGGER_ENABLED
+        value: "true"
+      - key: METRICS_ENABLED
+        value: "false"
+      # One instance, so it also runs the scheduled jobs (in production a dedicated
+      # worker does this; see infra/k8s/base/worker-config.yaml).
+      - key: DELIVERY_PLANNER_ENABLED
+        value: "true"
+      - key: WALLET_MAINTENANCE_ENABLED
+        value: "true"
+      - key: BATCHING_ENABLED
+        value: "true"
+      - key: IMPACT_AGGREGATION_ENABLED
+        value: "true"
+      - key: NOTIFICATIONS_ENABLED
+        value: "false"
+
+  - type: web
+    name: circular-paper-admin
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./infra/render/admin.Dockerfile
+    dockerContext: .
+    healthCheckPath: /login
+    envVars:
+      - key: NEXT_PUBLIC_API_BASE_URL
+        value: https://circular-paper-api.onrender.com/api/v1
+      - key: NEXT_PUBLIC_DEMO_MODE
+        value: "true"
